@@ -714,6 +714,72 @@ Promise.resolve()
     check('正常活动的登记弹层不出现风险提示', !safeJoin.includes('riskMini'));
   })
   .then(() => {
+    /* ============ 19. 时间基准：默认锁 9月16日，可切回真实时间 ============ */
+    section('19. 时间基准');
+
+    check('默认时间基准是 2026-09-16 09:00',
+      R.DEFAULT_BASE === '2026-09-16T09:00:00', R.DEFAULT_BASE);
+
+    /* 清掉本地存的基准，模拟全新访客 */
+    delete store['cr_timebase'];
+    check('全新访客首次打开 → 用默认基准', R.initialTimebase() === R.DEFAULT_BASE);
+
+    /* 存了 "real" 就用真实时间 */
+    store['cr_timebase'] = JSON.stringify('real');
+    check('存了 real → 用真实时间', R.initialTimebase() === 'real');
+
+    /* 存了 ISO 就用那个时间 */
+    store['cr_timebase'] = JSON.stringify('2026-09-20T10:00:00');
+    check('存了具体时间 → 用那个时间', R.initialTimebase() === '2026-09-20T10:00:00');
+
+    /* 设置里的两个按钮 */
+    R.state.timebase = R.DEFAULT_BASE;
+    R.state.tab = 'mine';
+    R.render();
+    let mineHTML = getEl('view').innerHTML;
+    check('设置里有「使用真实时间」按钮', mineHTML.includes('data-base="real"') &&
+      mineHTML.includes('使用真实时间'));
+    check('设置里有「锁定在 2026年9月16日」按钮', mineHTML.includes('data-base="data"') &&
+      mineHTML.includes('锁定在 2026年9月16日'));
+    check('锁定时「锁定」按钮是高亮状态',
+      /class="mini is-on"[^>]*data-base="data"/.test(mineHTML));
+    check('顶部日期标出「演示时间」', /9月16日 周三[^<]*演示时间/.test(
+      getEl('nowDate').textContent || '') ||
+      (R.render(), /9月16日[^<]*演示时间/.test(getEl('nowDate').textContent)),
+      getEl('nowDate').textContent);
+
+    /* 切到真实时间后，高亮应当换到另一个按钮 */
+    R.state.timebase = 'real';
+    R.render();
+    mineHTML = getEl('view').innerHTML;
+    check('切到真实时间后高亮换到「使用真实时间」',
+      /class="mini is-on"[^>]*data-base="real"/.test(mineHTML));
+    check('真实时间下顶部不再标「演示时间」',
+      !/演示时间/.test(getEl('nowDate').textContent), getEl('nowDate').textContent);
+    check('isRealTime() 判定正确',
+      R.isRealTime() === true && (R.state.timebase = R.DEFAULT_BASE, R.isRealTime() === false));
+
+    /* 9月16日 时，数据里三条 9/19 的活动应当是「还没到」而不是「今天」 */
+    const n16 = new Date('2026-09-16T09:00:00');
+    ['02', '10', '18'].forEach(id => {
+      const it = R.allItems().filter(i => i.id === id)[0];
+      const st = R.statusOf(it, n16);
+      check('9月16日 时，' + id + ' 不是「今天」而是还没到',
+        st.key !== 'today' && st.key !== 'live', '实际 ' + st.key + '（' + st.label + '）');
+    });
+
+    /* 数据里不能再有写死的时间状态 */
+    const rawAll = JSON.stringify(R.RAW_ITEMS);
+    check('数据里没有写死的「（已过）」「（已结束）」标签',
+      !rawAll.includes('（已过）') && !rawAll.includes('（已结束）'));
+    check('数据里没有写死的 past 标记', !rawAll.includes('"past":true'));
+
+    /* 活动本身的日期不能被改掉 */
+    const i02 = R.RAW_ITEMS.filter(i => i.id === '02')[0];
+    check('02 号活动本身的日期仍是 9月19日（活动日期 ≠ 时间基准）',
+      i02.schedule[0].at === '2026-09-19T19:00', i02.schedule[0].at);
+  })
+  .then(() => {
     /* ===================== 汇总 ===================== */
     console.log('\n' + '─'.repeat(52));
     console.log(fail === 0

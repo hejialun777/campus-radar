@@ -35,6 +35,22 @@
   /* 内容审核（js/moderation.js）；没加载时降级为"全部放行"，不影响主流程 */
   var checkFields = (typeof window !== 'undefined' && window.checkFields) ||
     function () { return { ok: true, hits: [] }; };
+
+  /* ---- 时间基准 ----
+   * 演示数据的时间背景是 2026 年 9 月 16 日。首次打开默认锁在这天，
+   * 保证每个人看到的演示效果一致；设置里可以随时切回真实时间。
+   * 存 "real" 表示用真实时间，存 ISO 字符串表示锁定在某天。
+   * 这个值同时决定了「今天」是哪天、哪些活动正在进行、倒计时剩多久。 */
+  var DEFAULT_BASE = (typeof window !== 'undefined' && window.DEFAULT_TIMEBASE) || '2026-09-16T09:00:00';
+  var REAL = 'real';
+
+  function initialTimebase() {
+    var v = readLS(LS.base, null);
+    if (v === null || v === undefined || v === '') return DEFAULT_BASE;
+    return v;
+  }
+
+  function isRealTime() { return !state.timebase || state.timebase === REAL; }
   var WINDOWS = (typeof window !== 'undefined' && window.DEADLINE_WINDOWS) || { urgentDays: 3, soonDays: 7 };
 
   function readLS(key, fallback) {
@@ -337,8 +353,8 @@
   /* ========================= 时间基准 ========================= */
 
   function currentTime() {
-    var base = state.timebase;
-    return base ? new Date(base) : new Date();
+    if (isRealTime()) return new Date();
+    return new Date(state.timebase);
   }
 
   /* ========================= 状态机 ========================= */
@@ -607,7 +623,7 @@
     category: 'all',
     newbie: false,
     onlyActionable: false,
-    timebase: readLS(LS.base, null),
+    timebase: initialTimebase(),
     openId: null,
     publishOpen: false,
     editId: null,
@@ -1313,10 +1329,14 @@
     html += '<section class="group"><h2 class="group__title">⚙️ 设置</h2>' +
       '<div class="settings">' +
         '<div class="settings__row">' +
-          '<div><b>时间基准</b><p>所有状态都是按这个时间点推算的。默认跟随真实时间，方便看到当下最真实的效果。</p></div>' +
+          '<div><b>时间基准</b><p>所有状态都是按这个时间点推算的。' +
+            '演示数据的时间背景是 2026 年 9 月 16 日，默认就锁在这天；' +
+            '也可以切回真实时间，看这套数据在当下是什么样子。</p></div>' +
           '<div class="settings__ctrl">' +
-            '<button class="mini' + (!state.timebase ? ' is-on' : '') + '" data-base="real">真实时间</button>' +
-            '<button class="mini' + (state.timebase ? ' is-on' : '') + '" data-base="exam">锁定 9月19日 14:00</button>' +
+            '<button type="button" class="mini' + (isRealTime() ? ' is-on' : '') + '" data-base="real">' +
+              '使用真实时间</button>' +
+            '<button type="button" class="mini' + (!isRealTime() ? ' is-on' : '') + '" data-base="data">' +
+              '锁定在 2026年9月16日</button>' +
           '</div>' +
         '</div>' +
         '<div class="settings__row">' +
@@ -1418,7 +1438,7 @@
             esc(s.at ? (s.timeTBD ? s.text : fmtDateTime(s.at) + (s.endAt ? '—' + fmtTime(new Date(s.endAt)) : '')) : s.text) +
             (s.place ? ' · ' + esc(s.place) : '') +
             (s.placeTBD ? ' · <span class="tbd">地点待确认</span>' : '') +
-            (s.past ? ' <span class="tbd">已结束</span>' : '') +
+            (past ? ' <span class="tbd">已结束</span>' : '') +
             (s.note ? ' <span class="tbd">' + esc(s.note) + '</span>' : '') +
           '</div></div>';
       });
@@ -1513,8 +1533,13 @@
       '<div class="kv__v">' + v + (extra ? ' <span class="tbd">（' + esc(extra) + '）</span>' : '') + '</div></div>';
   }
 
+  /* 只有还没发生的活动才能加进日历；已经过去的没必要导 .ics。
+     这里按当前时间实时判断，不依赖数据里写死的标记。 */
   function hasCalendarTime(item) {
-    return (item.schedule || []).some(function (s) { return s.at && !s.timeTBD && !s.past; });
+    var ms = currentTime().getTime();
+    return (item.schedule || []).some(function (s) {
+      return s.at && !s.timeTBD && new Date(s.at).getTime() >= ms;
+    });
   }
 
   function statusExplain(item, st) {
@@ -2091,10 +2116,10 @@
     var now = currentTime();
     var dEl = document.getElementById('nowDate');
     if (dEl) {
-      var isReal = !state.timebase;
+      var real = isRealTime();
       dEl.textContent = (now.getMonth() + 1) + '月' + now.getDate() + '日 ' + WD[now.getDay()] +
-        (isReal ? '' : ' · 演示时间');
-      dEl.classList.toggle('is-demo', !isReal);
+        (real ? '' : ' · 演示时间');
+      dEl.classList.toggle('is-demo', !real);
     }
     document.getElementById('hdrSub').textContent =
       state.tab === 'search' ? '把散落各处的校园信息，整理成你现在就能决定的事'
@@ -2380,13 +2405,14 @@
 
     if (t.hasAttribute('data-base')) {
       if (t.getAttribute('data-base') === 'real') {
-        state.timebase = null; writeLS(LS.base, null);
-        try { localStorage.removeItem(LS.base); } catch (err) {}
+        state.timebase = REAL;
+        writeLS(LS.base, REAL);
+        toast('已切换到真实时间，所有状态按现在重新推算');
       } else {
-        state.timebase = '2026-09-19T14:00:00';
-        writeLS(LS.base, state.timebase);
+        state.timebase = DEFAULT_BASE;
+        writeLS(LS.base, DEFAULT_BASE);
+        toast('已锁定在 2026年9月16日');
       }
-      toast('时间基准已更新，所有状态重新推算');
       render(); return;
     }
     if (t.hasAttribute('data-wipe')) {
@@ -2723,6 +2749,7 @@
     signupSection: signupSection, regPanel: regPanel, renderSearch: renderSearch,
     renderResults: renderResults, visibleItems: visibleItems, renderResultsOnly: renderResultsOnly,
     favs: favs, hl: hl, byUrgency: byUrgency, isJoined: isJoined, joinInfo: joinInfo,
+    isRealTime: isRealTime, DEFAULT_BASE: DEFAULT_BASE, initialTimebase: initialTimebase,
     setJoin: setJoin, removeJoin: removeJoin, joinIds: joinIds,
     riskOf: riskOf, isRisky: isRisky, topRisk: topRisk, renderJoin: renderJoin, renderRisk: renderRisk,
     RAW_ITEMS: RAW_ITEMS
