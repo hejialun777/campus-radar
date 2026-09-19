@@ -20,8 +20,8 @@ window.RAW_ITEMS = [
   {
     id: '01',
     title: '“蓝桥杯”程序设计校内训练营',
-    source: 'org',
-    category: 'training',
+    source: 'unknown',
+    category: 'A',
     tags: ['程序设计', '竞赛', '零基础'],
     oneLiner: '零基础也能报的算法训练营，9月24日22:00截止报名。注意：首次训练因场地调整，已经改到9月21日晚上。',
     schedule: [
@@ -53,8 +53,8 @@ window.RAW_ITEMS = [
   {
     id: '02',
     title: 'AI应用入门公开课',
-    source: 'org',
-    category: 'talk',
+    source: 'unknown',
+    category: 'C',
     tags: ['AI', '零基础', '无需报名'],
     oneLiner: '今天晚上7点，在计算机学院教学楼，不用报名直接去，预计讲90分钟。',
     schedule: [
@@ -76,8 +76,8 @@ window.RAW_ITEMS = [
   {
     id: '03',
     title: '大学生创新创业项目团队招募',
-    source: 'org',
-    category: 'recruit',
+    source: 'unknown',
+    category: 'B',
     tags: ['创新创业', '组队', '设计', '材料'],
     oneLiner: '大创项目补招设计和材料成员——开发岗名额已满，别再投开发了。9月22日18:00截止，要交一段自我介绍。',
     schedule: [],
@@ -106,8 +106,8 @@ window.RAW_ITEMS = [
   {
     id: '04',
     title: '数学建模竞赛经验分享会',
-    source: 'org',
-    category: 'talk',
+    source: 'unknown',
+    category: 'C',
     tags: ['数学建模', '竞赛', '有回放'],
     oneLiner: '直播9月18日就已经结束了。活动方说预计9月20日上传回放，没赶上直播的可以等回放。',
     schedule: [
@@ -129,8 +129,8 @@ window.RAW_ITEMS = [
   {
     id: '05',
     title: '校园公益志愿服务活动',
-    source: 'org',
-    category: 'volunteer',
+    source: 'unknown',
+    category: 'D',
     tags: ['志愿服务', '服务时长', '需签到'],
     oneLiner: '9月27日全天做志愿服务，约8小时。明天（9月20日）中午12:00就截止报名了，需要提前到场签到。',
     schedule: [
@@ -153,8 +153,8 @@ window.RAW_ITEMS = [
   {
     id: '06',
     title: 'Web开发零基础学习小组',
-    source: 'org',
-    category: 'training',
+    source: 'unknown',
+    category: 'B',
     tags: ['Web开发', '零基础', '限30人'],
     oneLiner: '9月23日起每周三晚上7:30，一共6周，限30人。但通知里根本没写报名截止时间，只说了“满员即止”。',
     schedule: [
@@ -178,8 +178,8 @@ window.RAW_ITEMS = [
   {
     id: '07',
     title: 'AI创新应用挑战赛',
-    source: 'org',
-    category: 'competition',
+    source: 'unknown',
+    category: 'A',
     tags: ['AI', '组队', '2—4人'],
     oneLiner: '要2—4人组队。9月21日18:00前先做校内意向登记，作品10月20日才交——注意，意向登记不等于已经报名成功。',
     schedule: [],
@@ -202,8 +202,8 @@ window.RAW_ITEMS = [
   {
     id: '08',
     title: '校园软件项目组招募',
-    source: 'org',
-    category: 'recruit',
+    source: 'unknown',
+    category: 'B',
     tags: ['开发', '大一', 'Git'],
     oneLiner: '做校园实用工具的项目组，面向大一、大二，希望你会一点 Git。每周约5小时，长期招募、满员即止。',
     schedule: [],
@@ -225,8 +225,8 @@ window.RAW_ITEMS = [
   {
     id: '09',
     title: '程序设计训练营补充通知',
-    source: 'org',
-    category: 'training',
+    source: 'unknown',
+    category: 'A',
     tags: ['补充通知'],
     mergedInto: '01',
     oneLiner: '这是 01 号“蓝桥杯训练营”的场地变更通知，已自动合并到原活动里。',
@@ -241,8 +241,8 @@ window.RAW_ITEMS = [
   {
     id: '10',
     title: '前端开发经验交流会',
-    source: 'org',
-    category: 'talk',
+    source: 'unknown',
+    category: 'C',
     tags: ['前端', '线下+直播', '无需报名'],
     oneLiner: '就在今天 15:00—16:30，A201 线下、同时有线上直播，不用报名。去不了现场可以看直播。',
     schedule: [
@@ -262,8 +262,8 @@ window.RAW_ITEMS = [
   {
     id: '11',
     title: '大学生科研入门分享会',
-    source: 'org',
-    category: 'talk',
+    source: 'unknown',
+    category: 'C',
     tags: ['科研', '导师', '论文检索'],
     oneLiner: '9月21日19:00—20:30，讲论文检索、学生科研项目，还有大家最关心的“怎么联系导师”，面向全校。',
     schedule: [
@@ -283,8 +283,8 @@ window.RAW_ITEMS = [
   {
     id: '12',
     title: '全国高校计算机能力挑战赛',
-    source: 'org',
-    category: 'competition',
+    source: 'unknown',
+    category: 'A',
     tags: ['本科生', '个人赛'],
     oneLiner: '个人参赛，10月5日23:59截止报名。但材料里没写参赛费用——报名前记得先确认要不要交钱、交多少。',
     schedule: [],
@@ -306,8 +306,8 @@ window.RAW_ITEMS = [
   {
     id: '13',
     title: '科研助理招募',
-    source: 'org',
-    category: 'recruit',
+    source: 'unknown',
+    category: 'B',
     tags: ['科研', '限大二及以上'],
     oneLiner: '协助数据整理和实验工作，每周约6小时，9月21日截止报名——但只招大二及以上，大一同学这次不符合条件。',
     schedule: [],
@@ -329,8 +329,8 @@ window.RAW_ITEMS = [
   {
     id: '14',
     title: 'Git与GitHub零基础工作坊',
-    source: 'org',
-    category: 'training',
+    source: 'unknown',
+    category: 'C',
     tags: ['Git', '大一新生', '限40人'],
     oneLiner: '9月21日19:00—20:30，主要面向大一新生，限40人、要提前预约。两个提醒：没写预约截止时间，而且提交报名表≠被录取。',
     schedule: [
@@ -354,8 +354,8 @@ window.RAW_ITEMS = [
   {
     id: '15',
     title: 'AI应用创意挑战',
-    source: 'org',
-    category: 'competition',
+    source: 'unknown',
+    category: 'A',
     tags: ['AI', '个人或团队'],
     oneLiner: '两个节点别搞混：9月23日23:59前交创意方案，9月30日前交最终作品。可以先个人参加，进了展示环节再组队。',
     schedule: [],
@@ -378,8 +378,8 @@ window.RAW_ITEMS = [
   {
     id: '16',
     title: '校园摄影志愿者招募',
-    source: 'org',
-    category: 'volunteer',
+    source: 'unknown',
+    category: 'B',
     tags: ['摄影', '长期招募'],
     oneLiner: '长期给校内大型活动拍照，有摄影设备优先但不是硬性要求。通知里没写报名截止时间，长期有效。',
     schedule: [],
@@ -400,8 +400,8 @@ window.RAW_ITEMS = [
   {
     id: '17',
     title: 'Python程序设计学习资料合集',
-    source: 'org',
-    category: 'resource',
+    source: 'unknown',
+    category: 'E',
     tags: ['Python', '学习资料', '网盘'],
     oneLiner: '资料本身长期开放，但现在这份网盘提取信息只到9月22日有效，之后会统一更新。想存的话趁这两天。',
     schedule: [],
@@ -423,8 +423,8 @@ window.RAW_ITEMS = [
   {
     id: '18',
     title: '网络安全兴趣交流小组',
-    source: 'org',
-    category: 'interest',
+    source: 'unknown',
+    category: 'C',
     tags: ['CTF', 'Web安全', '不限基础'],
     oneLiner: '今天19:30第一次交流，之后每两周一次。聊 CTF、Web 安全这些方向，不限基础。',
     schedule: [
@@ -446,8 +446,8 @@ window.RAW_ITEMS = [
   {
     id: '19',
     title: '学生创新项目路演观摩',
-    source: 'org',
-    category: 'talk',
+    source: 'unknown',
+    category: 'D',
     tags: ['路演', '仅可候补'],
     oneLiner: '活动是9月20日14:30，但报名9月18日22:00就已经截止了。现场还有余位的话可以候补入场——不保证有位置。',
     schedule: [
@@ -472,8 +472,8 @@ window.RAW_ITEMS = [
   {
     id: '20',
     title: '创新创业项目团队补充说明',
-    source: 'org',
-    category: 'recruit',
+    source: 'unknown',
+    category: 'B',
     tags: ['补充通知'],
     mergedInto: '03',
     oneLiner: '这是 03 号“创新创业项目团队招募”的名额变更说明，已自动合并到原活动里。',
@@ -488,9 +488,9 @@ window.RAW_ITEMS = [
   {
     id: '21',
     title: '计算机学院AI产品设计分享会',
-    source: 'official',
+    source: 'college',
     sourceName: '计算机学院',
-    category: 'talk',
+    category: 'C',
     tags: ['AI', '产品设计', '无需报名'],
     oneLiner: '计算机学院办的，9月20日19:00在明德楼B203，不用报名直接去，但座位有限。',
     schedule: [
@@ -513,7 +513,7 @@ window.RAW_ITEMS = [
     id: '22',
     title: '学生发起｜周末羽毛球约球',
     source: 'student',
-    category: 'interest',
+    category: 'F',
     tags: ['羽毛球', '约球', 'AA'],
     oneLiner: '9月20日16:00打球，计划6—8人，费用AA。场地还没最终确认，出门前最好先问一下发起人。',
     schedule: [
@@ -539,7 +539,7 @@ window.RAW_ITEMS = [
     id: '23',
     title: '学生发起｜AI工具交流搭子招募',
     source: 'student',
-    category: 'interest',
+    category: 'F',
     tags: ['AI', '找搭子', '零基础'],
     oneLiner: '9月21日晚上一起聊 AI 工具，零基础也欢迎。具体地点还没定，报名之后会拉群通知。',
     schedule: [
@@ -564,7 +564,7 @@ window.RAW_ITEMS = [
     id: '24',
     title: '学生发起｜“校园兼职福利分享”',
     source: 'student',
-    category: 'interest',
+    category: 'F',
     tags: ['兼职', '信息待核实'],
     oneLiner: '说是“零门槛、日结”，但没写主办方、地点和具体内容，只让你加私人微信。这类信息建议先别加。',
     schedule: [],
@@ -591,7 +591,7 @@ window.RAW_ITEMS = [
     id: '25',
     title: '学生发起｜数码新品体验交流',
     source: 'student',
-    category: 'interest',
+    category: 'F',
     tags: ['数码', '疑似推广'],
     oneLiner: '标题写的是“技术交流”，正文其实在介绍某商家优惠和购买链接，活动时间和地点都没写。',
     schedule: [],
@@ -618,9 +618,9 @@ window.RAW_ITEMS = [
   {
     id: '26',
     title: '外国语学院校园语言角',
-    source: 'official',
+    source: 'college',
     sourceName: '外国语学院',
-    category: 'interest',
+    category: 'C',
     tags: ['语言', '自由交流', '无需报名'],
     oneLiner: '外国语学院办的，9月21日15:00，自由交流，不用提前报名，但场地容量有限。',
     schedule: [
@@ -641,28 +641,65 @@ window.RAW_ITEMS = [
 
 /* ---------- 展示用元数据 ---------- */
 
+/* 发布者身份：学校 / 学院 / 老师 / 同学自主发布 四类，另加一类「材料未注明」。
+ *
+ * 关于「未注明」：材料里只有 21、26 明确写了由学院发布，22—25 明确写了学生个人发布，
+ * 其余 18 条都没有写明发布方。这类一律标成「发布方未注明」，不替材料认领一个身份——
+ * 能不能找到发布方，本身就是判断这条信息可信度的重要依据。 */
 window.SOURCE_META = {
-  official: { label: '学院/学校发布', short: '官方', icon: '🏛️' },
-  org: { label: '校内组织发布', short: '组织', icon: '🏫' },
-  student: { label: '学生个人发布', short: '学生', icon: '🙋' }
+  school:  { label: '学校发布',     short: '学校',   icon: '🏫', desc: '学校层面（如教务处、校级部门）发布' },
+  college: { label: '学院发布',     short: '学院',   icon: '🏛️', desc: '学院官方发布，材料中已写明学院名称' },
+  teacher: { label: '老师发布',     short: '老师',   icon: '👨‍🏫', desc: '教师个人或课题组发布' },
+  student: { label: '同学自主发布', short: '同学',   icon: '🙋', desc: '学生个人发布，非官方，需要甄别' },
+  unknown: { label: '发布方未注明', short: '未注明', icon: '❓', desc: '材料中未写明由谁发布，无法核实来源' }
 };
 
-window.CATEGORY_META = {
-  competition: { label: '竞赛', icon: '🏆' },
-  training: { label: '训练营/工作坊', icon: '📚' },
-  talk: { label: '讲座/分享会', icon: '🎤' },
-  recruit: { label: '项目/团队招募', icon: '🤝' },
-  volunteer: { label: '志愿服务', icon: '💚' },
-  resource: { label: '学习资料', icon: '📦' },
-  interest: { label: '兴趣活动', icon: '🎈' }
-};
+/* 发布者身份的四个正式类型（用于注册、发布和筛选） */
+window.SOURCE_ORDER = ['school', 'college', 'teacher', 'student'];
 
-/* 「我需要做什么」清单模板：按条目已有的字段生成，没写的一律不出现 */
-window.CHECKLIST_RULES = [
-  { when: it => it.needSignup === true, text: '需要提前报名' },
-  { when: it => it.needSignup === false, text: '无需报名，直接到场' },
-  { when: it => it.needSignup === null, text: '是否需要报名通知未说明，建议先确认' },
-  { when: it => it.capacity, text: it => `有名额限制：${it.capacityText || it.capacity + ' 人'}` },
-  { when: it => it.fee && String(it.fee).startsWith('AA'), text: it => `费用：${it.fee}` },
-  { when: it => it.fee === null && it.category !== 'resource', text: '费用未注明，涉及缴费请先确认' }
+/* 珠海科技学院各学院，用于注册时选择所属单位 */
+window.COLLEGES = [
+  '美术设计与建筑学院',
+  '商学院',
+  '电子信息工程学院',
+  '计算机学院',
+  '旅游与公共管理学院',
+  '智能制造与航空学院',
+  '文学院',
+  '外国语学院',
+  '生命科学学院',
+  '金融与贸易学院',
+  '物流管理与工程学院',
+  '音乐舞蹈学院',
+  '健康学院',
+  '体育科学学院',
+  '大数据学院',
+  '马克思主义学院',
+  '创新创业学院',
+  '继续教育学院'
 ];
+
+/* 六个门类：类别代码、名称、说明、图标、配色
+ * 采用《校园活动信息结构化整理》的 A—F 分类，26 条信息每条归入唯一门类。
+ * 其中 09 归 A、20 归 B，它们本身是 01、03 的补充通知，已合并到主条目上，
+ * 所以门类计数里不会单独出现。 */
+window.CATEGORY_META = {
+  A: { code: 'A', label: '竞赛与训练营', icon: '🏆', color: 'amber',
+       desc: '各类学科竞赛、程序设计训练营及其补充通知' },
+  B: { code: 'B', label: '招募与组队', icon: '🤝', color: 'blue',
+       desc: '团队成员招募、项目组招募、学习小组招新' },
+  C: { code: 'C', label: '讲座与分享会', icon: '🎤', color: 'violet',
+       desc: '公开课、经验分享、工作坊、兴趣小组交流' },
+  D: { code: 'D', label: '志愿服务与观摩', icon: '💚', color: 'green',
+       desc: '公益志愿活动、活动观摩' },
+  E: { code: 'E', label: '学习资源', icon: '📦', color: 'teal',
+       desc: '课程资料、练习合集等开放资源' },
+  F: { code: 'F', label: '学生个人发起', icon: '🙋', color: 'rose',
+       desc: '学生个人发布的信息，非官方，需要甄别真伪' }
+};
+
+/* 门类的展示顺序 */
+window.CATEGORY_ORDER = ['A', 'B', 'C', 'D', 'E', 'F'];
+
+/* 「距截止还剩几天」的窗口 */
+window.DEADLINE_WINDOWS = { urgentDays: 3, soonDays: 7 };
