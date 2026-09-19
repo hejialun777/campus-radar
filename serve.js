@@ -57,7 +57,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log('\n  校园机会雷达 · 本地预览已启动\n');
+  console.log('\n  校园活动雷达 · 本地预览已启动\n');
   console.log('  本机：   http://localhost:' + PORT);
   const nets = os.networkInterfaces();
   for (const name of Object.keys(nets)) {
