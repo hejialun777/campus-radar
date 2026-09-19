@@ -29,6 +29,7 @@
   var SOURCES = (typeof window !== 'undefined' && window.SOURCE_META) || {};
   var SOURCE_ORDER = (typeof window !== 'undefined' && window.SOURCE_ORDER) || [];
   var COLLEGES = (typeof window !== 'undefined' && window.COLLEGES) || [];
+  var SOURCE_UNKNOWN = 'unknown';
   var WINDOWS = (typeof window !== 'undefined' && window.DEADLINE_WINDOWS) || { urgentDays: 3, soonDays: 7 };
 
   function readLS(key, fallback) {
@@ -434,7 +435,7 @@
   /* ========================= 应用状态 ========================= */
 
   var state = {
-    tab: 'radar',
+    tab: 'search',
     q: '',
     source: 'all',
     category: 'all',
@@ -456,6 +457,29 @@
 
   /* ========================= 过滤 ========================= */
 
+  /* 一条信息里所有可被搜到的文本。
+   * 之前漏了 content（用户发布的正文）和发布者，还写了一个根本不存在的
+   * it.publisher 字段，导致自己发的正文搜不到。这里统一收口，加字段只改这一处。 */
+  function searchText(it) {
+    var cat = CATS[it.category] || {};
+    var author = it.author || {};
+    return [
+      it.title,
+      it.content,          /* 用户发布的正文 */
+      it.oneLiner,
+      it.audience,
+      it.sourceName,       /* 发布方 */
+      author.name,         /* 发布者姓名 */
+      author.org,
+      cat.code,
+      cat.label,           /* 「竞赛」这类词也能搜到 */
+      (it.tags || []).join(' '),
+      (it.deadlines || []).map(function (d) { return d.label; }).join(' '),
+      (it.schedule || []).map(function (s) { return (s.place || '') + ' ' + (s.text || ''); }).join(' '),
+      it.raw
+    ].filter(Boolean).join(' ').toLowerCase();
+  }
+
   function visibleItems() {
     var now = currentTime();
     var q = state.q.trim().toLowerCase();
@@ -474,11 +498,7 @@
         if (['expired', 'ended', 'replay'].indexOf(st.key) >= 0) return false;
       }
 
-      if (q) {
-        var hay = [it.title, it.oneLiner, it.audience, (it.tags || []).join(' '),
-          it.raw, (it.publisher || '')].join(' ').toLowerCase();
-        if (hay.indexOf(q) < 0) return false;
-      }
+      if (q && searchText(it).indexOf(q) < 0) return false;
       return true;
     });
 
@@ -612,13 +632,77 @@
 
   /* ========================= 渲染：雷达页 ========================= */
 
-  function renderRadar() {
+  /* 搜索页外壳：搜索框 + 筛选条件。
+   *
+   * 这一层在输入过程中**不会重建**，只有下面的 #results 会更新。
+   * 之前的写法是每敲一个字就把整个视图重新 innerHTML，输入框被销毁重建，
+   * 中文输入法的候选状态被硬生生打断，结果就是中文根本打不进去。
+   */
+  function renderSearch() {
+    var all = allItems();
+
+    /* 筛选按钮上的条数是全局统计，不随搜索词变化，所以放在外壳里 */
+    var catCount = {}, srcCount = {};
+    all.forEach(function (it) {
+      catCount[it.category] = (catCount[it.category] || 0) + 1;
+      srcCount[it.source] = (srcCount[it.source] || 0) + 1;
+    });
+
+    var html = '';
+
+    html += '<div class="searchBar">' +
+      '<span class="searchBar__icon">🔍</span>' +
+      '<input id="q" type="search" autocomplete="off" spellcheck="false" ' +
+        'placeholder="搜活动、门类、地点、发布者…比如「零基础」「Git」「计算机学院」" ' +
+        'aria-label="搜索校园信息" value="' + esc(state.q) + '">' +
+      (state.q ? '<button class="search__clear" data-clear-q="1" aria-label="清空搜索">✕</button>' : '') +
+    '</div>';
+
+    html += '<div class="filters">';
+
+    html += '<div class="chiprow" role="group" aria-label="门类筛选">';
+    html += filtChip('category', 'all', '全部门类');
+    CAT_ORDER.forEach(function (c) {
+      if (!catCount[c]) return;
+      html += filtChip('category', c, CATS[c].code + ' ' + CATS[c].label + ' ' + catCount[c]);
+    });
+    html += '</div>';
+
+    html += '<div class="chiprow" role="group" aria-label="发布者身份筛选">';
+    html += filtChip('source', 'all', '全部发布者');
+    SOURCE_ORDER.forEach(function (s) {
+      if (!srcCount[s]) return;
+      html += filtChip('source', s, SOURCES[s].icon + ' ' + SOURCES[s].short + ' ' + srcCount[s]);
+    });
+    if (srcCount.unknown) {
+      html += filtChip('source', 'unknown', SOURCES[SOURCE_UNKNOWN].icon + ' ' +
+        SOURCES[SOURCE_UNKNOWN].short + ' ' + srcCount.unknown);
+    }
+    html += '</div>';
+
+    html += '<div class="chiprow chiprow--toggle">' +
+      '<button type="button" class="toggle' + (state.newbie ? ' is-on' : '') + '" data-toggle="newbie">' +
+        '<span class="toggle__dot"></span>新生模式' +
+        '<em>只看新生能参加的</em></button>' +
+      '<button type="button" class="toggle' + (state.onlyActionable ? ' is-on' : '') + '" data-toggle="onlyActionable">' +
+        '<span class="toggle__dot"></span>只看还能参加' +
+        '<em>隐藏已截止和已结束</em></button>' +
+      '</div>';
+
+    html += '</div>';
+
+    html += '<div id="results">' + renderResults() + '</div>';
+
+    return html;
+  }
+
+  /* 结果区：只重绘这一块，输入框不受影响 */
+  function renderResults() {
     var now = currentTime();
     var list = visibleItems();
     var all = allItems();
 
-    /* 顶部提醒条：把最容易错过的信息顶到眼前。
-       跟下面的列表用同一份筛选结果，避免「上面说有 3 场、下面一场都看不到」。 */
+    /* 提醒条跟下面的列表用同一份筛选结果，避免「上面说有 3 场、下面一场都看不到」 */
     var closing = list.filter(function (it) { return statusOf(it, now).key === 'closing'; });
     var todayLive = list.filter(function (it) {
       var k = statusOf(it, now).key; return k === 'today' || k === 'live';
@@ -641,93 +725,65 @@
         esc(soonest.title) + '」· ' + esc(relative(soonest.deadlines[0].at)) + '</button>');
     }
 
-    /* 门类 / 发布者统计（只统计列表里实际出现的条目；09、20 已并入主条目，不单独计数） */
-    var catCount = {}, srcCount = {};
-    all.forEach(function (it) {
-      catCount[it.category] = (catCount[it.category] || 0) + 1;
-      srcCount[it.source] = (srcCount[it.source] || 0) + 1;
-    });
     var mergedCount = RAW_ITEMS.filter(function (r) { return r.mergedInto; }).length;
     var lowQuality = all.filter(function (it) {
       return completeness(it).score <= 2 || (it.risk && it.risk.level === 'high');
     }).length;
-
     var bk = deadlineBuckets(list, now);
+    var mineCount = list.filter(function (it) { return it.userPost; }).length;
 
     var html = '';
 
     html += '<div class="alerts">' + alerts.join('') + '</div>';
 
-    /* 概览 */
+    /* 搜索结果提示：让人知道搜到了什么、是不是在筛选 */
+    if (state.q.trim() || state.category !== 'all' || state.source !== 'all' ||
+        state.newbie || state.onlyActionable) {
+      html += '<div class="resultBar">' +
+        '<span>找到 <b>' + list.length + '</b> 条' +
+          (state.q.trim() ? '含「' + esc(state.q.trim()) + '」的信息' : '') + '</span>' +
+        '<button type="button" class="mini" data-reset="1">清空条件</button>' +
+      '</div>';
+    }
+
     html += '<div class="summary">' +
       '<div class="summary__item"><b>' + all.length + '</b><span>条信息</span></div>' +
       '<div class="summary__item' + (bk.urgent.length ? ' is-alert' : '') + '"><b>' + bk.urgent.length +
         '</b><span>' + WINDOWS.urgentDays + ' 天内截止</span></div>' +
       '<div class="summary__item"><b>' + mergedCount + '</b><span>条已合并</span></div>' +
-      '<div class="summary__item"><b>' + lowQuality + '</b><span>条信息不全/存疑</span></div>' +
+      '<div class="summary__item"><b>' + (mineCount || lowQuality) + '</b><span>' +
+        (mineCount ? '条账号发布' : '条信息不全/存疑') + '</span></div>' +
     '</div>';
 
-    /* 距截止还剩 N 天 —— 单独拎出来，这是最需要马上做决定的一批 */
     html += countdownPanel(list, now);
 
-    /* 筛选 */
-    html += '<div class="filters">';
-    html += '<div class="search">' +
-      '<span class="search__icon">🔍</span>' +
-      '<input id="q" type="search" placeholder="搜活动、搜关键词，比如「零基础」「Git」" value="' + esc(state.q) + '">' +
-      (state.q ? '<button class="search__clear" data-clear-q="1" aria-label="清空">✕</button>' : '') +
-      '</div>';
-
-    html += '<div class="chiprow" role="group" aria-label="发布者身份筛选">';
-    html += filtChip('source', 'all', '全部发布者');
-    SOURCE_ORDER.forEach(function (s) {
-      if (!srcCount[s]) return;
-      html += filtChip('source', s, SOURCES[s].icon + ' ' + SOURCES[s].short + ' ' + srcCount[s]);
-    });
-    if (srcCount.unknown) {
-      html += filtChip('source', 'unknown', SOURCES.unknown.icon + ' ' + SOURCES.unknown.short + ' ' + srcCount.unknown);
-    }
-    html += '</div>';
-
-    html += '<div class="chiprow" role="group" aria-label="门类筛选">';
-    html += filtChip('category', 'all', '全部门类');
-    CAT_ORDER.forEach(function (c) {
-      if (!catCount[c]) return;
-      html += filtChip('category', c, CATS[c].code + ' ' + CATS[c].label + ' ' + catCount[c]);
-    });
-    html += '</div>';
-
-    html += '<div class="chiprow chiprow--toggle">' +
-      '<button class="toggle' + (state.newbie ? ' is-on' : '') + '" data-toggle="newbie">' +
-        '<span class="toggle__dot"></span>新生模式' +
-        '<em>只看新生能参加的</em></button>' +
-      '<button class="toggle' + (state.onlyActionable ? ' is-on' : '') + '" data-toggle="onlyActionable">' +
-        '<span class="toggle__dot"></span>只看还能参加' +
-        '<em>隐藏已截止和已结束</em></button>' +
-      '</div>';
-
-    html += '</div>';
-
-    /* 列表 */
     if (!list.length) {
       html += '<div class="empty">' +
         '<div class="empty__icon">🫥</div>' +
-        '<p>没有符合条件的信息</p>' +
-        '<button class="btn btn--ghost" data-reset="1">清空筛选条件</button>' +
+        '<p>' + (state.q.trim()
+          ? '没有搜到含「' + esc(state.q.trim()) + '」的信息'
+          : '没有符合条件的信息') + '</p>' +
+        '<button type="button" class="btn btn--ghost" data-reset="1">清空筛选条件</button>' +
         '</div>';
-    } else {
-      var groups = groupByTier(list, now);
-      groups.forEach(function (g) {
-        html += '<section class="group">' +
-          '<h2 class="group__title">' + g.title +
-            (g.note ? '<span class="group__note">' + g.note + '</span>' : '') + '</h2>' +
-          '<div class="cards">' + g.items.map(function (it) {
-            return cardHTML(it, statusOf(it, now));
-          }).join('') + '</div></section>';
-      });
+      return html;
     }
 
+    groupByTier(list, now).forEach(function (g) {
+      html += '<section class="group">' +
+        '<h2 class="group__title">' + g.title +
+          (g.note ? '<span class="group__note">' + g.note + '</span>' : '') + '</h2>' +
+        '<div class="cards">' + g.items.map(function (it) {
+          return cardHTML(it, statusOf(it, now));
+        }).join('') + '</div></section>';
+    });
+
     return html;
+  }
+
+  /* 只重绘结果区。搜索输入时走这条路径，输入框本身不动。 */
+  function renderResultsOnly() {
+    var el = document.getElementById('results');
+    if (el) el.innerHTML = renderResults();
   }
 
   function filtChip(key, val, label) {
@@ -951,8 +1007,9 @@
       '</div>' +
     '</section>';
 
-    html += '<footer class="foot">校园机会雷达 · 珠海科技学院计算机协会软件部 2026 秋季纳新第二轮考核作品<br>' +
-      '页面信息均来自考核题目提供的模拟材料，不代表学校真实通知。未注明的事实一律标注为「未注明」，不做推测。</footer>';
+    html += '<footer class="foot">校园活动雷达<br>' +
+      '页面中的活动、通知与招募信息均为演示用模拟数据，不代表任何学校的真实通知。<br>' +
+      '未注明的事实一律标注为「未注明」，不做推测。</footer>';
 
     return html;
   }
@@ -1545,7 +1602,7 @@
 
   function render() {
     var view = document.getElementById('view');
-    if (state.tab === 'radar') view.innerHTML = renderRadar();
+    if (state.tab === 'search') view.innerHTML = renderSearch();
     else if (state.tab === 'today') view.innerHTML = renderToday();
     else view.innerHTML = renderMine();
 
@@ -1564,7 +1621,7 @@
       dEl.classList.toggle('is-demo', !isReal);
     }
     document.getElementById('hdrSub').textContent =
-      state.tab === 'radar' ? '把散落各处的校园信息，整理成你现在就能决定的事'
+      state.tab === 'search' ? '把散落各处的校园信息，整理成你现在就能决定的事'
       : state.tab === 'today' ? '今天和接下来几天，按时间排好'
       : '收藏、参加和发布的内容';
   }
@@ -1697,8 +1754,11 @@
       render(); return;
     }
     if (t.hasAttribute('data-clear-q')) {
-      state.q = ''; render();
-      var qi = document.getElementById('q'); if (qi) qi.focus();
+      state.q = '';
+      var qi = document.getElementById('q');
+      if (qi) { qi.value = ''; qi.focus(); }
+      renderResultsOnly();
+      syncClearBtn();
       return;
     }
 
@@ -1763,16 +1823,53 @@
     }
   });
 
-  /* 搜索输入 */
-  document.addEventListener('input', function (e) {
+  /* ---- 搜索输入 ----
+   * 两条保护：
+   *   1. 输入法组合期间（打拼音还没选字）不重绘，否则候选框会被打断，
+   *      中文就打不进去。compositionend 时再补一次。
+   *   2. 重绘只更新 #results，输入框本身不动，光标和输入法状态都不会丢。
+   */
+  var composing = false;
+
+  document.addEventListener('compositionstart', function (e) {
+    if (e.target && e.target.id === 'q') composing = true;
+  });
+
+  document.addEventListener('compositionend', function (e) {
     if (e.target && e.target.id === 'q') {
+      composing = false;
       state.q = e.target.value;
-      var pos = e.target.selectionStart;
-      render();
-      var qi = document.getElementById('q');
-      if (qi) { qi.focus(); try { qi.setSelectionRange(pos, pos); } catch (err) {} }
+      renderResultsOnly();
+      syncClearBtn();
     }
   });
+
+  document.addEventListener('input', function (e) {
+    if (!e.target || e.target.id !== 'q') return;
+    state.q = e.target.value;
+    if (composing || e.isComposing) return;   /* 组合中：先不重绘 */
+    renderResultsOnly();
+    syncClearBtn();
+  });
+
+  /* 输入框右侧的 ✕ 按钮在有内容时才出现 */
+  function syncClearBtn() {
+    var bar = document.querySelector('.searchBar');
+    var input = document.getElementById('q');
+    if (!bar || !input) return;
+    var btn = bar.querySelector('.search__clear');
+    var has = input.value.length > 0;
+    if (has && !btn) {
+      btn = document.createElement('button');
+      btn.className = 'search__clear';
+      btn.setAttribute('data-clear-q', '1');
+      btn.setAttribute('aria-label', '清空搜索');
+      btn.textContent = '✕';
+      bar.appendChild(btn);
+    } else if (!has && btn) {
+      btn.parentNode.removeChild(btn);
+    }
+  }
 
   /* 登录 / 注册表单提交 */
   document.addEventListener('submit', function (e) {
@@ -1918,7 +2015,7 @@
     writeLS(LS.posts, posts);
 
     closeSheet();
-    state.tab = 'radar';
+    state.tab = 'search';
     render();
     toast(missing.length
       ? '已发布（门类 ' + cat + '）。有 ' + missing.length + ' 项补充信息没填，页面上会提示同学注意'

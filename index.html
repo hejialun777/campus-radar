@@ -3,45 +3,41 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#4f46e5">
-<meta name="description" content="校园项目作品集 —— 每个项目对应考核材料中的一部分，点进去即可直接体验。">
-<title>校园项目作品集</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎒</text></svg>">
-<link rel="stylesheet" href="css/portal.css">
+<meta name="theme-color" content="#FAFAF8">
+<meta name="description" content="校园活动雷达 —— 把散落在各处的校园活动、竞赛、招募和同学自发信息，整理成你现在就能决定的事。">
+<title>校园活动雷达</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
+<link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 
-<header class="hero">
-  <div class="hero__inner">
-    <div class="hero__badge">珠海科技学院计算机协会软件部 · 2026 秋季纳新第二轮考核</div>
-    <h1 class="hero__title">校园项目作品集</h1>
-    <p class="hero__sub">
-      基于考核题目提供的模拟校园材料完成的产品。每个项目对应材料中的一部分，
-      点进去即可直接使用，无需下载或安装。
-    </p>
-    <div class="hero__stats">
-      <div class="hero__stat"><b id="statProjects">—</b><span>个项目</span></div>
-      <div class="hero__stat"><b>2026<span class="unit">年</span>9<span class="unit">月</span>19<span class="unit">日</span></b><span>信息基准时间</span></div>
-      <div class="hero__stat"><b>纯静态</b><span>无需后端</span></div>
+<div class="topbar">
+  <header class="hdr">
+    <div class="hdr__inner">
+      <div class="hdr__row">
+        <div class="hdr__logo" aria-hidden="true"></div>
+        <div class="hdr__brand">
+          <h1>校园活动雷达</h1>
+          <p id="hdrSub">把散落各处的校园信息，整理成你现在就能决定的事</p>
+        </div>
+        <div class="hdr__date" id="nowDate">—</div>
+      </div>
     </div>
-  </div>
-</header>
+  </header>
 
-<main>
-  <div class="sec-head">
-    <h2>全部项目</h2>
-    <p>点击卡片进入对应作品</p>
-  </div>
+  <nav class="tabbar" aria-label="主导航">
+    <button class="tab is-on" data-tab="search"><i>🔍</i><span>搜索</span></button>
+    <button class="tab" data-tab="today"><i>📅</i><span>今日安排</span></button>
+    <button class="tab" data-tab="mine"><i>👤</i><span>我的</span></button>
+  </nav>
+</div>
 
-  <div class="grid" id="grid"></div>
+<main id="view" aria-live="polite"></main>
 
-  <footer class="foot">
-    <p>页面中的活动、通知与招募信息均来自考核题目提供的<strong>模拟材料</strong>，不代表学校真实通知。</p>
-    <p>各项目对未注明信息的处理方式统一为：标注“未注明”，不做推测补全。</p>
-  </footer>
-</main>
+<div id="sheetRoot"></div>
+<div id="toast" role="status" aria-live="polite"></div>
 
-<script src="js/projects.js"></script>
-<script src="js/portal.js"></script>
+<script src="js/data.js"></script>
+<script src="js/app.js"></script>
 </body>
 </html>
