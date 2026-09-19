@@ -18,8 +18,18 @@
     join: 'cr_joins',
     posts: 'cr_posts',
     base: 'cr_timebase',
-    fb: 'cr_feedback'
+    fb: 'cr_feedback',
+    users: 'cr_users',
+    session: 'cr_session'
   };
+
+  /* 元数据；data.js 没加载时兜底，避免整页崩掉 */
+  var CATS = (typeof window !== 'undefined' && window.CATEGORY_META) || {};
+  var CAT_ORDER = (typeof window !== 'undefined' && window.CATEGORY_ORDER) || [];
+  var SOURCES = (typeof window !== 'undefined' && window.SOURCE_META) || {};
+  var SOURCE_ORDER = (typeof window !== 'undefined' && window.SOURCE_ORDER) || [];
+  var COLLEGES = (typeof window !== 'undefined' && window.COLLEGES) || [];
+  var WINDOWS = (typeof window !== 'undefined' && window.DEADLINE_WINDOWS) || { urgentDays: 3, soonDays: 7 };
 
   function readLS(key, fallback) {
     try {
@@ -35,6 +45,93 @@
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  /* ========================= 本地账号 =========================
+   * 作品是纯静态页面，没有服务端，所以这**不是真实认证**：
+   * 账号只存在这台设备的浏览器里，换设备、换浏览器、清缓存就没了。
+   * 它的作用是让「谁发布的」有个归属，并挡住同设备上的随手冒名。
+   * 密码不存明文，存的是 每个账号独立随机盐 + SHA-256。
+   * ========================================================== */
+
+  function currentUser() {
+    var s = readLS(LS.session, null);
+    return s && typeof s === 'object' ? s : null;
+  }
+
+  function randomSalt() {
+    var a = new Uint8Array(16);
+    if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(a);
+    else for (var i = 0; i < a.length; i++) a[i] = Math.floor(Math.random() * 256);
+    return Array.prototype.map.call(a, function (b) {
+      return ('0' + b.toString(16)).slice(-2);
+    }).join('');
+  }
+
+  /* 优先用 SubtleCrypto 的 SHA-256；不可用（file:// 或老浏览器）时退回一个
+     非加密散列，只为了避免明文落盘，安全性由上面的说明兜底。 */
+  function hashPassword(pass, salt) {
+    var input = salt + '::' + pass;
+    if (window.crypto && crypto.subtle && crypto.subtle.digest && window.TextEncoder) {
+      return crypto.subtle
+        .digest('SHA-256', new TextEncoder().encode(input))
+        .then(function (buf) {
+          return Array.prototype.map.call(new Uint8Array(buf), function (b) {
+            return ('0' + b.toString(16)).slice(-2);
+          }).join('');
+        })
+        .catch(function () { return weakHash(input); });
+    }
+    return Promise.resolve(weakHash(input));
+  }
+
+  function weakHash(str) {
+    var h1 = 0x811c9dc5, h2 = 0x01000193;
+    for (var i = 0; i < str.length; i++) {
+      var c = str.charCodeAt(i);
+      h1 = ((h1 ^ c) * 16777619) >>> 0;
+      h2 = ((h2 + c) * 2654435761) >>> 0;
+    }
+    return 'w' + h1.toString(16) + h2.toString(16);
+  }
+
+  function findUser(name) {
+    var users = readLS(LS.users, {});
+    var key = String(name || '').trim().toLowerCase();
+    return users[key] || null;
+  }
+
+  /* 账号资料（身份、单位）跟着会话走，发布时要用 */
+  function sessionOf(u) {
+    return { name: u.name, role: u.role || 'student', org: u.org || '', sid: u.sid || '',
+             at: new Date().toISOString() };
+  }
+
+  function registerUser(name, pass, profile) {
+    var key = String(name || '').trim().toLowerCase();
+    var users = readLS(LS.users, {});
+    var salt = randomSalt();
+    profile = profile || {};
+    return hashPassword(pass, salt).then(function (hash) {
+      users[key] = {
+        name: String(name).trim(), salt: salt, hash: hash,
+        role: profile.role || 'student', org: profile.org || '', sid: profile.sid || '',
+        createdAt: new Date().toISOString()
+      };
+      writeLS(LS.users, users);
+      writeLS(LS.session, sessionOf(users[key]));
+      return users[key];
+    });
+  }
+
+  function loginUser(name, pass) {
+    var u = findUser(name);
+    if (!u) return Promise.resolve({ ok: false, msg: '没有找到这个账号，先注册一个吧' });
+    return hashPassword(pass, u.salt).then(function (hash) {
+      if (hash !== u.hash) return { ok: false, msg: '密码不对' };
+      writeLS(LS.session, sessionOf(u));
+      return { ok: true, user: u };
+    });
   }
 
   function startOfDay(d) { var x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
@@ -173,6 +270,100 @@
     return { key: 'ongoing', label: '长期开放', tone: 'green', tier: 7, deadline: null };
   }
 
+  /* ========================= 截止倒计时 =========================
+   * 把「最近要截止的事」单独拎出来，按今天的日期算还剩多久。
+   * 窗口：≤3 天算紧急，3—7 天算近期。已经过期的截止时间不进来。
+   * 只统计传进来的列表，所以它会跟着当前的筛选条件走，不会和下面的列表打架。
+   * ============================================================ */
+
+  function deadlineBuckets(list, now) {
+    now = now || currentTime();
+    var ms = now.getTime();
+    var urgentMs = WINDOWS.urgentDays * 86400000;
+    var soonMs = WINDOWS.soonDays * 86400000;
+    var urgent = [], soon = [];
+
+    (list || []).forEach(function (it) {
+      (it.deadlines || []).forEach(function (d) {
+        if (!d.at) return;                 /* 通知没给具体时间的，不进倒计时 */
+        var t = new Date(d.at).getTime();
+        if (isNaN(t) || t <= ms) return;   /* 已经过去的不要 */
+        var left = t - ms;
+        var entry = { item: it, dl: d, t: t, left: left };
+        if (left <= urgentMs) urgent.push(entry);
+        else if (left <= soonMs) soon.push(entry);
+      });
+    });
+
+    var byTime = function (a, b) { return a.t - b.t; };
+    urgent.sort(byTime);
+    soon.sort(byTime);
+    return { urgent: urgent, soon: soon };
+  }
+
+  /* 「还有 22 小时」——按剩余时长选最合适的单位 */
+  function countdownText(msLeft) {
+    var hours = msLeft / 3600000;
+    if (hours < 1) return Math.max(1, Math.round(msLeft / 60000)) + ' 分钟';
+    if (hours < 48) return Math.round(hours) + ' 小时';
+    return Math.round(hours / 24) + ' 天';
+  }
+
+  /* 剩余越少，色越重 */
+  function urgencyTone(msLeft) {
+    var hours = msLeft / 3600000;
+    if (hours <= 24) return 'now';
+    if (hours <= 72) return 'soon';
+    return 'later';
+  }
+
+  function cdRow(e) {
+    var it = e.item;
+    var cat = CATS[it.category] || {};
+    var dlText = e.dl.precision === 'day'
+      ? fmtMonthDay(e.dl.at) + '（未注明具体时间）'
+      : fmtDateTime(e.dl.at);
+    return '<button class="cdrow" data-open="' + esc(it.id) + '">' +
+      '<span class="cdrow__cat cdrow__cat--' + esc(cat.color || 'gray') + '">' + esc(cat.code || '·') + '</span>' +
+      '<span class="cdrow__body">' +
+        '<span class="cdrow__title">' + esc(it.title) + '</span>' +
+        '<span class="cdrow__label">' + esc(e.dl.label || '截止') + ' · ' + esc(dlText) + '</span>' +
+      '</span>' +
+      '<span class="cdrow__left cdrow__left--' + urgencyTone(e.left) + '">' +
+        '还剩<br><b>' + esc(countdownText(e.left)) + '</b>' +
+      '</span>' +
+    '</button>';
+  }
+
+  function countdownPanel(list, now) {
+    var bk = deadlineBuckets(list, now);
+    if (!bk.urgent.length && !bk.soon.length) return '';
+
+    var h = '<section class="cd">';
+    h += '<div class="cd__head">' +
+      '<h2>⏳ 距截止还剩 ' + WINDOWS.urgentDays + ' 天</h2>' +
+      '<span class="cd__sub">按今天 ' + fmtMonthDay(now.toISOString()) + ' 算' +
+        (bk.urgent.length ? ' · ' + bk.urgent.length + ' 项' : '') + '</span>' +
+      '</div>';
+
+    if (!bk.urgent.length) {
+      h += '<p class="cd__none">这 ' + WINDOWS.urgentDays + ' 天内没有要截止的事。</p>';
+    } else {
+      h += '<div class="cd__list">' + bk.urgent.map(cdRow).join('') + '</div>';
+    }
+
+    if (bk.soon.length) {
+      h += '<details class="cd__more">' +
+        '<summary>再看 ' + WINDOWS.urgentDays + '–' + WINDOWS.soonDays + ' 天内的 ' +
+          bk.soon.length + ' 项</summary>' +
+        '<div class="cd__list cd__list--soon">' + bk.soon.map(cdRow).join('') + '</div>' +
+        '</details>';
+    }
+
+    h += '</section>';
+    return h;
+  }
+
   /* ========================= 信息完整度 ========================= */
   /*
    * 不用主观打分，只检查 6 个对学生决策最关键的事实字段有没有。
@@ -253,6 +444,8 @@
     openId: null,
     publishOpen: false,
     editId: null,
+    authOpen: false,
+    authMode: 'login',
     settingsOpen: false,
     toast: null
   };
@@ -316,9 +509,35 @@
   }
 
   function sourceChip(item) {
-    var meta = SOURCE_META[item.source] || SOURCE_META.org;
-    return '<span class="chip chip--src chip--src-' + item.source + '">' +
-      meta.icon + ' ' + esc(meta.short) + '</span>';
+    var meta = SOURCES[item.source] || SOURCES.unknown ||
+      { icon: '❓', short: '未注明', label: '发布方未注明', desc: '' };
+    return '<span class="chip chip--src chip--src-' + esc(item.source) + '" title="' +
+      esc(meta.desc || meta.label) + '">' + meta.icon + ' ' + esc(meta.short) + '</span>';
+  }
+
+  /* 门类徽章：A—F，配色和倒计时面板、筛选按钮保持一致 */
+  function catChip(category) {
+    var c = CATS[category];
+    if (!c) return '';
+    return '<span class="chip chip--cat chip--cat-' + esc(c.color) + '" title="' + esc(c.desc) + '">' +
+      esc(c.code) + ' ' + esc(c.label) + '</span>';
+  }
+
+  /* 这条是不是当前登录的人发的 */
+  function isMine(item) {
+    var me = currentUser();
+    if (!item.userPost || !me) return false;
+    return item.author && item.author.name === me.name;
+  }
+
+  /* 学生发布的内容，把「谁发的、身份确认了没有」直接写在卡片上 */
+  function publisherLine(item) {
+    var a = item.author || {};
+    var who = a.name || item.sourceName || '未署名';
+    var org = a.org ? ' · ' + a.org : '';
+    return '<span class="pub__mark pub__mark--' + (item.verified ? 'ok' : 'warn') + '">' +
+        (item.verified ? '✅ 发布者已确认身份' : '⚠️ 发布者身份未确认') + '</span>' +
+      '<span class="pub__who">由 <b>' + esc(who) + '</b>' + esc(org) + ' 发布</span>';
   }
 
   /* 卡片上的关键事实行：只显示「有」的，没有的合并成一句提示 */
@@ -370,12 +589,14 @@
       '<article class="' + cls + '" data-open="' + esc(item.id) + '" tabindex="0" role="button">' +
         '<div class="card__top">' +
           statusChip(st) +
+          catChip(item.category) +
           sourceChip(item) +
           (updates ? '<span class="chip chip--merged">🔗 已合并 ' + updates + ' 条后续通知</span>' : '') +
-          (item.userPost ? '<span class="chip chip--mine">我发布的</span>' : '') +
+          (isMine(item) ? '<span class="chip chip--mine">我发布的</span>' : '') +
         '</div>' +
         '<h3 class="card__title">' + esc(item.title) + '</h3>' +
         '<p class="card__one">' + esc(item.oneLiner || '') + '</p>' +
+        (item.userPost ? '<div class="pubLine">' + publisherLine(item) + '</div>' : '') +
         '<div class="card__facts">' + factLine(item) + '</div>' +
         '<div class="card__bottom">' +
           '<span class="fit fit--' + fit.key + '">' + fit.icon + ' ' + esc(fit.label) + '</span>' +
@@ -396,9 +617,10 @@
     var list = visibleItems();
     var all = allItems();
 
-    /* 顶部提醒条：把最容易错过的信息顶到眼前 */
-    var closing = all.filter(function (it) { return statusOf(it, now).key === 'closing'; });
-    var todayLive = all.filter(function (it) {
+    /* 顶部提醒条：把最容易错过的信息顶到眼前。
+       跟下面的列表用同一份筛选结果，避免「上面说有 3 场、下面一场都看不到」。 */
+    var closing = list.filter(function (it) { return statusOf(it, now).key === 'closing'; });
+    var todayLive = list.filter(function (it) {
       var k = statusOf(it, now).key; return k === 'today' || k === 'live';
     });
 
@@ -419,13 +641,18 @@
         esc(soonest.title) + '」· ' + esc(relative(soonest.deadlines[0].at)) + '</button>');
     }
 
-    /* 类别统计 */
-    var catCount = {};
-    all.forEach(function (it) { catCount[it.category] = (catCount[it.category] || 0) + 1; });
+    /* 门类 / 发布者统计（只统计列表里实际出现的条目；09、20 已并入主条目，不单独计数） */
+    var catCount = {}, srcCount = {};
+    all.forEach(function (it) {
+      catCount[it.category] = (catCount[it.category] || 0) + 1;
+      srcCount[it.source] = (srcCount[it.source] || 0) + 1;
+    });
     var mergedCount = RAW_ITEMS.filter(function (r) { return r.mergedInto; }).length;
     var lowQuality = all.filter(function (it) {
       return completeness(it).score <= 2 || (it.risk && it.risk.level === 'high');
     }).length;
+
+    var bk = deadlineBuckets(list, now);
 
     var html = '';
 
@@ -434,10 +661,14 @@
     /* 概览 */
     html += '<div class="summary">' +
       '<div class="summary__item"><b>' + all.length + '</b><span>条信息</span></div>' +
+      '<div class="summary__item' + (bk.urgent.length ? ' is-alert' : '') + '"><b>' + bk.urgent.length +
+        '</b><span>' + WINDOWS.urgentDays + ' 天内截止</span></div>' +
       '<div class="summary__item"><b>' + mergedCount + '</b><span>条已合并</span></div>' +
       '<div class="summary__item"><b>' + lowQuality + '</b><span>条信息不全/存疑</span></div>' +
-      '<div class="summary__item"><b>' + (catCount.competition || 0) + '</b><span>个竞赛</span></div>' +
     '</div>';
+
+    /* 距截止还剩 N 天 —— 单独拎出来，这是最需要马上做决定的一批 */
+    html += countdownPanel(list, now);
 
     /* 筛选 */
     html += '<div class="filters">';
@@ -447,18 +678,22 @@
       (state.q ? '<button class="search__clear" data-clear-q="1" aria-label="清空">✕</button>' : '') +
       '</div>';
 
-    html += '<div class="chiprow" role="group" aria-label="来源筛选">';
-    html += filtChip('source', 'all', '全部来源');
-    ['official', 'org', 'student'].forEach(function (s) {
-      html += filtChip('source', s, SOURCE_META[s].icon + ' ' + SOURCE_META[s].short);
+    html += '<div class="chiprow" role="group" aria-label="发布者身份筛选">';
+    html += filtChip('source', 'all', '全部发布者');
+    SOURCE_ORDER.forEach(function (s) {
+      if (!srcCount[s]) return;
+      html += filtChip('source', s, SOURCES[s].icon + ' ' + SOURCES[s].short + ' ' + srcCount[s]);
     });
+    if (srcCount.unknown) {
+      html += filtChip('source', 'unknown', SOURCES.unknown.icon + ' ' + SOURCES.unknown.short + ' ' + srcCount.unknown);
+    }
     html += '</div>';
 
-    html += '<div class="chiprow" role="group" aria-label="类型筛选">';
-    html += filtChip('category', 'all', '全部类型');
-    Object.keys(CATEGORY_META).forEach(function (c) {
+    html += '<div class="chiprow" role="group" aria-label="门类筛选">';
+    html += filtChip('category', 'all', '全部门类');
+    CAT_ORDER.forEach(function (c) {
       if (!catCount[c]) return;
-      html += filtChip('category', c, CATEGORY_META[c].icon + ' ' + CATEGORY_META[c].label);
+      html += filtChip('category', c, CATS[c].code + ' ' + CATS[c].label + ' ' + catCount[c]);
     });
     html += '</div>';
 
@@ -626,10 +861,38 @@
     var now = currentTime();
     var html = '';
 
+    var me = currentUser();
+
     html += '<div class="mineHead">' +
       '<div><h2>我的</h2><p>收藏、已报名和发布的内容都存在这台设备上，关掉页面再打开还在。</p></div>' +
-      '<button class="btn btn--primary" data-publish="1">＋ 发布活动</button>' +
+      '<button class="btn btn--primary" data-publish="1">＋ 发布内容</button>' +
     '</div>';
+
+    /* ---- 账号 / 发布者身份 ---- */
+    if (me) {
+      var rm = SOURCES[me.role] || SOURCES.student;
+      html += '<div class="acct acct--in">' +
+        '<span class="acct__avatar">' + esc(me.name.slice(0, 1)) + '</span>' +
+        '<div class="acct__body">' +
+          '<div class="acct__line"><b>' + esc(me.name) + '</b>' +
+            '<span class="chip chip--src chip--src-' + esc(me.role) + '">' +
+              rm.icon + ' ' + esc(rm.label) + '</span>' +
+            '<span class="chip chip--ok">✅ 身份已确认</span>' +
+          '</div>' +
+          '<p>' + esc(me.org || '未填写学院 / 单位') + (me.sid ? ' · ' + esc(me.sid) : '') + '</p>' +
+        '</div>' +
+        '<button class="mini" data-auth="logout">退出登录</button>' +
+      '</div>';
+    } else {
+      html += '<div class="acct acct--out">' +
+        '<span class="acct__avatar">🔒</span>' +
+        '<div class="acct__body">' +
+          '<b>还没有登录</b>' +
+          '<p>登录后可以发布内容，并带上你的发布者身份（学校 / 学院 / 老师 / 同学自主发布）。</p>' +
+        '</div>' +
+        '<button class="btn btn--primary" data-auth="open">登录 / 注册</button>' +
+      '</div>';
+    }
 
     var mine = allItems().filter(function (it) {
       return favs.indexOf(it.id) >= 0 || joins.indexOf(it.id) >= 0 || it.userPost;
@@ -703,17 +966,16 @@
     var comp = completeness(item);
     var isFav = favs.indexOf(item.id) >= 0;
     var isJoin = joins.indexOf(item.id) >= 0;
-    var meta = SOURCE_META[item.source] || SOURCE_META.org;
-    var cat = CATEGORY_META[item.category] || { label: '其他', icon: '📄' };
+    var cat = CATS[item.category] || { label: '未分类', code: '?', desc: '' };
 
     var h = '';
 
     h += '<div class="sheet__head">' +
-      '<div class="sheet__chips">' + statusChip(st) + sourceChip(item) +
-        '<span class="chip chip--cat">' + cat.icon + ' ' + esc(cat.label) + '</span>' +
-      '</div>' +
+      '<div class="sheet__chips">' + statusChip(st) + catChip(item.category) + sourceChip(item) + '</div>' +
       '<h2 class="sheet__title">' + esc(item.title) + '</h2>' +
+      '<p class="sheet__pub">门类：<b>' + esc(cat.code) + ' ' + esc(cat.label) + '</b> · ' + esc(cat.desc) + '</p>' +
       (item.sourceName ? '<p class="sheet__pub">发布方：' + esc(item.sourceName) + '</p>' : '') +
+      (item.userPost ? '<p class="sheet__pub">' + publisherLine(item) + '</p>' : '') +
       '<p class="sheet__one">' + esc(item.oneLiner || '') + '</p>' +
     '</div>';
 
@@ -744,6 +1006,14 @@
 
     if (item.warn) {
       h += '<div class="note note--warn">💡 ' + esc(item.warn) + '</div>';
+    }
+
+    /* 用户发布的原文内容 */
+    if (item.content) {
+      h += '<section class="sec"><h3>发布内容</h3>' +
+        '<p class="postBody">' + esc(item.content).replace(/\n/g, '<br>') + '</p>' +
+        (item.contact ? '<p class="sec__desc" style="margin-top:10px">联系方式：<b>' + esc(item.contact) + '</b></p>' : '') +
+      '</section>';
     }
 
     /* 关键信息 */
@@ -936,7 +1206,7 @@
 
   function blankPost() {
     return {
-      id: '', title: '', category: 'interest', source: 'student',
+      id: '', title: '', content: '', category: '', source: 'student',
       oneLiner: '', schedule: [], deadlines: [], audience: '全校学生',
       zeroBase: null, needSignup: null, fee: null, commitment: null,
       capacity: null, missing: [], tags: [], raw: ''
@@ -958,94 +1228,233 @@
         String(d.getMinutes()).padStart(2, '0');
     }
 
+    var me = currentUser();
     var h = '';
+
     h += '<div class="sheet__head">' +
-      '<h2 class="sheet__title">' + (isEdit ? '编辑我发布的活动' : '发布活动 / 招募') + '</h2>' +
-      '<p class="sheet__one">同学之间约球、找搭子、组队都可以发。发布后会直接出现在活动列表里，其他同学也能看到。</p>' +
+      '<h2 class="sheet__title">' + (isEdit ? '编辑我发布的内容' : '发布内容') + '</h2>' +
+      '<p class="sheet__one">同学之间约球、找搭子、组队都可以发。发布后会直接出现在列表里，其他同学也能看到。' +
+        '<b>门类、发布内容、截止时间三项必填。</b></p>' +
     '</div>';
 
+    /* ---- 发布者身份：必须先确认，发布内容才有归属 ---- */
+    if (!me) {
+      h += '<div class="idbox idbox--out">' +
+        '<span class="idbox__icon">🔒</span>' +
+        '<div class="idbox__body">' +
+          '<b>发布前需要先登录，确认发布者身份</b>' +
+          '<p>登录后发布的内容会记在你名下，其他同学能看到是谁发的、有没有确认过身份。</p>' +
+        '</div>' +
+        '<button type="button" class="btn btn--primary" data-auth="open">去登录 / 注册</button>' +
+      '</div>';
+    } else {
+      h += '<div class="idbox idbox--in">' +
+        '<span class="idbox__avatar">' + esc(me.name.slice(0, 1)) + '</span>' +
+        '<div class="idbox__body">' +
+          '<b>发布者：' + esc(me.name) + ' <span class="idbox__ok">✅ 身份已确认</span></b>' +
+          '<p>' + esc((me.org || '未填写学院') + (me.sid ? ' · ' + me.sid : '')) + '</p>' +
+        '</div>' +
+        '<button type="button" class="mini" data-auth="logout">切换账号</button>' +
+      '</div>';
+    }
+
     h += '<form class="form" id="postForm">';
+
+    /* ---- 1. 门类（必选） ---- */
+    h += '<label class="fld"><span>属于哪个门类 <b>*</b></span>' +
+      '<select name="category" required>' +
+        '<option value=""' + (item.category ? '' : ' selected') + ' disabled>请选择门类（必选）</option>' +
+        CAT_ORDER.map(function (c) {
+          return '<option value="' + c + '"' + (item.category === c ? ' selected' : '') + '>' +
+            CATS[c].code + ' · ' + CATS[c].label + '　—— ' + CATS[c].desc + '</option>';
+        }).join('') +
+      '</select>' +
+      '<em class="fld__hint">同学自发发布的内容一般选 F；如果是替某个组织转发，选对应的 A—E。</em>' +
+    '</label>';
+
+    /* ---- 2. 发布内容（必填） ---- */
     h += '<label class="fld"><span>标题 <b>*</b></span>' +
       '<input name="title" required maxlength="40" placeholder="例：周末羽毛球约球" value="' + esc(item.title) + '"></label>';
 
-    h += '<label class="fld"><span>一句话说明</span>' +
-      '<input name="oneLiner" maxlength="60" placeholder="用一句话讲清楚这件事，比如：周六下午打球，6—8人，费用AA" value="' + esc(item.oneLiner) + '"></label>';
+    h += '<label class="fld"><span>发布内容 <b>*</b></span>' +
+      '<textarea name="content" required rows="4" maxlength="300" ' +
+        'placeholder="说清楚这是什么活动、怎么参加、有什么要求。例：这周六下午4点在体育馆打球，计划6—8人，场地费AA，想来的私我拉群。">' +
+        esc(item.content || '') + '</textarea>' +
+      '<em class="fld__hint">这段话会作为活动详情展示给其他同学。</em>' +
+    '</label>';
 
-    h += '<label class="fld"><span>类型</span><select name="category">' +
-      Object.keys(CATEGORY_META).map(function (c) {
-        return '<option value="' + c + '"' + (item.category === c ? ' selected' : '') + '>' +
-          CATEGORY_META[c].icon + ' ' + CATEGORY_META[c].label + '</option>';
-      }).join('') + '</select></label>';
+    /* ---- 3. 截止时间（必填） ---- */
+    h += '<label class="fld"><span>截止时间 <b>*</b></span>' +
+      '<input type="datetime-local" name="deadline" required value="' + toLocalInput(d0.at) + '">' +
+      '<em class="fld__hint">报名或报名的最后期限。这个时间会进入「距截止还剩 3 天」的倒计时列表。</em>' +
+    '</label>';
 
-    h += '<label class="fld"><span>活动时间</span>' +
-      '<input type="datetime-local" name="startAt" value="' + toLocalInput(s0.at) + '"></label>';
+    h += '<details class="optional"' + (isEdit ? ' open' : '') + '><summary>补充信息（可选，但填了同学更容易决定）</summary>' +
+      '<div class="optional__body">' +
 
-    h += '<label class="fld"><span>地点</span>' +
-      '<input name="place" maxlength="30" placeholder="例：体育馆3号场" value="' + esc(s0.place || '') + '"></label>';
+      '<label class="fld"><span>活动开始时间</span>' +
+        '<input type="datetime-local" name="startAt" value="' + toLocalInput(s0.at) + '"></label>' +
 
-    h += '<label class="fld"><span>面向对象</span>' +
-      '<input name="audience" maxlength="20" placeholder="例：全校学生" value="' + esc(item.audience || '全校学生') + '"></label>';
+      '<label class="fld"><span>地点</span>' +
+        '<input name="place" maxlength="30" placeholder="例：体育馆3号场" value="' + esc(s0.place || '') + '"></label>' +
 
-    h += '<div class="fld fld--radios"><span>需要报名吗</span><div class="radios">' +
-      [['yes', '需要报名', item.needSignup === true],
-       ['no', '不用报名', item.needSignup === false],
-       ['unknown', '还没想好/暂不说明', item.needSignup === null || item.needSignup === undefined]]
-        .map(function (r) {
-          return '<label class="radio"><input type="radio" name="needSignup" value="' + r[0] + '"' +
-            (r[2] ? ' checked' : '') + '><span>' + r[1] + '</span></label>';
-        }).join('') + '</div></div>';
+      '<label class="fld"><span>面向对象</span>' +
+        '<input name="audience" maxlength="20" placeholder="例：全校学生" value="' + esc(item.audience || '全校学生') + '"></label>' +
 
-    h += '<label class="fld"><span>报名截止时间</span>' +
-      '<input type="datetime-local" name="deadline" value="' + toLocalInput(d0.at) + '"></label>';
+      '<div class="fld fld--2col">' +
+        '<label class="fld"><span>费用</span>' +
+          '<input name="fee" maxlength="20" placeholder="例：AA / 免费 / 每人20元" value="' + esc(item.fee || '') + '"></label>' +
+        '<label class="fld"><span>人数上限</span>' +
+          '<input name="capacity" type="number" min="1" max="999" placeholder="例：8" value="' + esc(item.capacity || '') + '"></label>' +
+      '</div>' +
 
-    h += '<div class="fld fld--2col">' +
-      '<label class="fld"><span>费用</span>' +
-        '<input name="fee" maxlength="20" placeholder="例：AA / 免费 / 每人20元" value="' + esc(item.fee || '') + '"></label>' +
-      '<label class="fld"><span>时间投入</span>' +
-        '<input name="commitment" maxlength="20" placeholder="例：每周约3小时" value="' + esc(item.commitment || '') + '"></label>' +
-    '</div>';
-
-    h += '<div class="fld fld--2col">' +
-      '<label class="fld"><span>人数上限</span>' +
-        '<input name="capacity" type="number" min="1" max="999" placeholder="例：8" value="' + esc(item.capacity || '') + '"></label>' +
       '<label class="fld"><span>联系方式</span>' +
         '<input name="contact" maxlength="40" placeholder="例：微信号 / 群号" value="' + esc(item.contact || '') + '"></label>' +
-    '</div>';
+
+      '</div></details>';
+
+    /* ---- 4. 发布者确认 ---- */
+    h += '<label class="confirm">' +
+      '<input type="checkbox" name="confirmIdentity" required' + (me ? '' : ' disabled') + '>' +
+      '<span>我确认以上内容<strong>由本人发布且信息属实</strong>，并愿意为此负责。' +
+        '虚假内容会被其他同学反馈，并标记为「身份存疑」。</span>' +
+    '</label>';
 
     /* 发布时的完整度自检：填得越全，同学越找得到 */
     h += '<div class="precheck" id="precheck"></div>';
 
     h += '<div class="form__acts">' +
       '<button type="button" class="btn btn--ghost" data-close-sheet="1">取消</button>' +
-      '<button type="submit" class="btn btn--primary">' + (isEdit ? '保存修改' : '发布') + '</button>' +
+      '<button type="submit" class="btn btn--primary"' + (me ? '' : ' disabled') + '>' +
+        (me ? (isEdit ? '保存修改' : '确认身份并发布') : '请先登录') + '</button>' +
     '</div>';
 
     h += '</form>';
     return h;
   }
 
-  /* 实时自检 */
+  /* 实时自检：必填项没齐就一直提示；齐了再提示哪些可选信息还缺 */
   function updatePrecheck() {
     var box = document.getElementById('precheck');
     if (!box) return;
     var f = document.getElementById('postForm');
     if (!f) return;
     var g = function (n) { var el = f.elements[n]; return el ? String(el.value || '').trim() : ''; };
-    var need = [
+
+    /* 必填三项 */
+    var must = [
+      { k: '门类', ok: !!g('category') },
       { k: '标题', ok: !!g('title') },
+      { k: '发布内容', ok: !!g('content') },
+      { k: '截止时间', ok: !!g('deadline') }
+    ];
+    var mustMiss = must.filter(function (x) { return !x.ok; }).map(function (x) { return x.k; });
+
+    if (mustMiss.length) {
+      box.className = 'precheck precheck--must';
+      box.innerHTML = '<p>必填项还差：<b>' + mustMiss.join('、') + '</b>。' +
+        '这三项（门类、内容、截止时间）不填完不能发布。</p>';
+      return;
+    }
+
+    /* 可选但很影响别人判断的字段 */
+    var nice = [
       { k: '活动时间', ok: !!g('startAt') },
       { k: '地点', ok: !!g('place') },
-      { k: '面向对象', ok: !!g('audience') },
       { k: '费用', ok: !!g('fee') },
       { k: '联系方式', ok: !!g('contact') }
     ];
-    var miss = need.filter(function (n) { return !n.ok; }).map(function (n) { return n.k; });
-    var done = need.length - miss.length;
+    var niceMiss = nice.filter(function (x) { return !x.ok; }).map(function (x) { return x.k; });
+    var done = nice.length - niceMiss.length;
 
-    box.innerHTML = '<div class="precheck__bar"><i style="width:' + Math.round(done / need.length * 100) + '%"></i></div>' +
-      '<p>' + (miss.length
-        ? '还有 <b>' + miss.join('、') + '</b> 没填。这些不填的话，同学看到之后还得再来问你一次。'
-        : '👌 关键信息都齐了，同学可以直接判断要不要参加。') + '</p>';
+    box.className = 'precheck';
+    box.innerHTML = '<div class="precheck__bar"><i style="width:' +
+        Math.round(done / nice.length * 100) + '%"></i></div>' +
+      '<p>' + (niceMiss.length
+        ? '必填项齐了，可以发布。还差 <b>' + niceMiss.join('、') + '</b> 没填——' +
+          '不填的话，同学看到之后还得再来问你一次。'
+        : '👌 必填和补充信息都齐了，同学可以直接判断要不要参加。') + '</p>';
+  }
+
+  /* ========================= 登录 / 注册 ========================= */
+
+  function renderAuth(mode) {
+    mode = mode || 'login';
+    var isReg = mode === 'register';
+    var h = '';
+
+    h += '<div class="sheet__head">' +
+      '<h2 class="sheet__title">' + (isReg ? '注册发布者身份' : '登录') + '</h2>' +
+      '<p class="sheet__one">' +
+        (isReg
+          ? '发布前先确认你是哪一类发布者。发布的内容会挂在你的身份下，其他同学能看到是谁发的。'
+          : '登录后可以发布内容，也能管理自己发过的信息。') +
+      '</p>' +
+    '</div>';
+
+    h += '<div class="authtabs">' +
+      '<button type="button" class="authtab' + (isReg ? '' : ' is-on') + '" data-authmode="login">登录</button>' +
+      '<button type="button" class="authtab' + (isReg ? ' is-on' : '') + '" data-authmode="register">注册</button>' +
+    '</div>';
+
+    h += '<form class="form" id="authForm">';
+
+    if (isReg) {
+      h += '<div class="fld"><span>发布者身份 <b>*</b></span><div class="roles">' +
+        SOURCE_ORDER.map(function (s, i) {
+          return '<label class="role">' +
+            '<input type="radio" name="role" value="' + s + '"' + (i === 3 ? ' checked' : '') + '>' +
+            '<span><b>' + SOURCES[s].icon + ' ' + SOURCES[s].label + '</b>' +
+            '<em>' + esc(SOURCES[s].desc) + '</em></span>' +
+          '</label>';
+        }).join('') + '</div>' +
+        '<em class="fld__hint">这个身份会显示在你发布的每一条内容上。</em></div>';
+    }
+
+    h += '<label class="fld"><span>' + (isReg ? '显示名称' : '昵称') + ' <b>*</b></span>' +
+      '<input name="name" required maxlength="20" autocomplete="username" placeholder="' +
+        (isReg ? '同学填姓名或昵称；学院发布填学院名；老师填「姓 + 老师」' : '注册时填的名称') + '"></label>';
+
+    if (isReg) {
+      h += '<label class="fld"><span>所属学院 / 单位</span>' +
+        '<select name="org">' +
+          '<option value="">请选择（可留空）</option>' +
+          COLLEGES.map(function (c) { return '<option value="' + esc(c) + '">' + esc(c) + '</option>'; }).join('') +
+          '<option value="学校部门">学校部门（如教务处、学生工作处）</option>' +
+          '<option value="其他">其他 / 非学院单位</option>' +
+        '</select>' +
+        '<em class="fld__hint">选「学院发布」时，这里要和显示名称一致，同学才知道是谁在发布。</em>' +
+      '</label>';
+      h += '<label class="fld"><span>学号 / 工号</span>' +
+        '<input name="sid" maxlength="20" placeholder="选填，只在本站内用于标识身份"></label>';
+    }
+
+    h += '<label class="fld"><span>密码 <b>*</b></span>' +
+      '<input type="password" name="pass" required minlength="4" autocomplete="' +
+        (isReg ? 'new-password' : 'current-password') + '" placeholder="至少 4 位"></label>';
+
+    h += '<div class="authnote authnote--info">' +
+      '🔐 本站没有服务端，账号只保存在<strong>这台设备的浏览器</strong>里：' +
+      '换设备、换浏览器或清缓存就没了，密码也不会传到任何地方。' +
+      '它的作用是让发布内容有明确归属，<strong>不是真实身份认证</strong>。' +
+    '</div>';
+
+    h += '<div class="authnote" id="authNote"></div>';
+
+    h += '<div class="form__acts">' +
+      '<button type="button" class="btn btn--ghost" data-close-sheet="1">取消</button>' +
+      '<button type="submit" class="btn btn--primary">' + (isReg ? '注册并登录' : '登录') + '</button>' +
+    '</div>';
+
+    h += '</form>';
+    return h;
+  }
+
+  function openAuth(mode) {
+    state.authMode = mode || 'login';
+    state.authOpen = true;
+    state.openId = null; state.publishOpen = false; state.editId = null;
+    openSheet(renderAuth(state.authMode), 'sheet--form');
   }
 
   /* ========================= 日历导出 ========================= */
@@ -1179,11 +1588,13 @@
     root.classList.remove('is-open');
     root.innerHTML = '';
     document.body.style.overflow = '';
-    state.openId = null; state.publishOpen = false; state.editId = null;
+    state.openId = null; state.publishOpen = false; state.editId = null; state.authOpen = false;
   }
 
   function refreshSheet() {
-    if (state.publishOpen || state.editId) {
+    if (state.authOpen) {
+      openSheet(renderAuth(state.authMode), 'sheet--form');
+    } else if (state.publishOpen || state.editId) {
       var it = state.editId ? getItem(state.editId) : null;
       openSheet(renderPublish(it), 'sheet--form');
       updatePrecheck();
@@ -1207,8 +1618,29 @@
   document.addEventListener('click', function (e) {
     var t = e.target.closest('[data-tab],[data-open],[data-fav],[data-join],[data-filt],[data-toggle],' +
       '[data-reset],[data-clear-q],[data-goto-today],[data-publish],[data-edit],[data-del],' +
-      '[data-close-sheet],[data-base],[data-wipe],[data-ics],[data-copy],[data-fb]');
+      '[data-close-sheet],[data-base],[data-wipe],[data-ics],[data-copy],[data-fb],' +
+      '[data-auth],[data-authmode]');
     if (!t) return;
+
+    /* ---- 账号 ---- */
+    if (t.hasAttribute('data-authmode')) {
+      state.authMode = t.getAttribute('data-authmode');
+      refreshSheet();
+      return;
+    }
+    if (t.hasAttribute('data-auth')) {
+      var act = t.getAttribute('data-auth');
+      if (act === 'open') { openAuth('login'); return; }
+      if (act === 'logout') {
+        if (!confirm('退出登录？退出后不能发布内容，已发布的内容会保留。')) return;
+        try { localStorage.removeItem(LS.session); } catch (err) {}
+        closeSheet();
+        state.tab = 'mine';
+        render();
+        toast('已退出登录');
+        return;
+      }
+    }
 
     /* 面板内按钮不冒泡到卡片 */
     if (t.hasAttribute('data-fav')) {
@@ -1342,6 +1774,54 @@
     }
   });
 
+  /* 登录 / 注册表单提交 */
+  document.addEventListener('submit', function (e) {
+    if (!e.target || e.target.id !== 'authForm') return;
+    e.preventDefault();
+
+    var f = e.target;
+    var g = function (n) { var el = f.elements[n]; return el ? String(el.value || '').trim() : ''; };
+    var note = document.getElementById('authNote');
+    var say = function (html, kind) {
+      if (note) { note.className = 'authnote authnote--' + (kind || 'err'); note.innerHTML = html; }
+    };
+
+    var name = g('name'), pass = g('pass');
+    if (!name) { say('请先填名称'); return; }
+    if (pass.length < 4) { say('密码至少 4 位'); return; }
+
+    var isReg = state.authMode === 'register';
+
+    if (!isReg) {
+      if (note) note.textContent = '正在登录…';
+      loginUser(name, pass).then(function (r) {
+        if (!r.ok) { say(r.msg); return; }
+        closeSheet();
+        state.tab = 'mine';
+        render();
+        toast('已登录：' + r.user.name);
+      });
+      return;
+    }
+
+    /* 注册 */
+    if (findUser(name)) { say('这个名称已经被注册了，换一个，或者直接去登录'); return; }
+    var role = (f.querySelector('input[name=role]:checked') || {}).value || 'student';
+    if (role === 'college' && !g('org')) {
+      say('选择「学院发布」时，请同时在下方选择所属学院');
+      return;
+    }
+
+    if (note) note.textContent = '正在创建账号…';
+
+    registerUser(name, pass, { role: role, org: g('org'), sid: g('sid') }).then(function () {
+      closeSheet();
+      state.tab = 'mine';
+      render();
+      toast('注册成功，已登录为「' + SOURCES[role].label + '」');
+    }).catch(function () { say('注册失败，请重试'); });
+  });
+
   /* 发布表单提交 */
   document.addEventListener('submit', function (e) {
     if (!e.target || e.target.id !== 'postForm') return;
@@ -1349,59 +1829,86 @@
 
     var f = e.target;
     var g = function (n) { var el = f.elements[n]; return el ? String(el.value || '').trim() : ''; };
+
+    /* ---- 发布必须先确认身份 ---- */
+    var me = currentUser();
+    if (!me) { closeSheet(); openAuth('login'); toast('发布前需要先登录，确认发布者身份'); return; }
+
+    /* ---- 三项必填，缺一不可 ---- */
+    var cat = g('category');
     var title = g('title');
-    if (!title) { toast('请先填写标题'); return; }
+    var content = g('content');
+    var dl = g('deadline');
+    var lack = [];
+    if (!cat) lack.push('门类');
+    if (!title) lack.push('标题');
+    if (!content) lack.push('发布内容');
+    if (!dl) lack.push('截止时间');
+    if (lack.length) { toast('还差：' + lack.join('、')); return; }
+
+    var lackConfirm = f.elements.confirmIdentity && !f.elements.confirmIdentity.checked;
+    if (lackConfirm) { toast('请先勾选「我确认以上内容由本人发布」'); return; }
 
     var startAt = g('startAt');
     var place = g('place');
-    var dl = g('deadline');
     var need = (f.querySelector('input[name=needSignup]:checked') || {}).value;
 
+    /* 补充信息没填的，如实记下来，展示时会提示同学去确认 */
     var missing = [];
     if (!startAt) missing.push('活动时间');
     if (!place) missing.push('地点');
     if (!g('fee')) missing.push('费用');
     if (!g('contact')) missing.push('联系方式');
-    if (need === 'yes' && !dl) missing.push('报名截止时间');
+    if (!g('audience')) missing.push('面向对象');
 
     var isEdit = !!state.editId;
     var id = isEdit ? state.editId : 'U' + Date.now().toString(36);
 
+    /* 发布者身份带上：谁发的、属于哪一类、单位是什么 */
+    var role = me.role || 'student';
+    var author = { name: me.name, role: role, org: me.org || '', sid: me.sid || '' };
+
     var item = {
       id: id,
       title: title,
-      source: 'student',
-      sourceName: '我发布',
-      category: g('category') || 'interest',
-      oneLiner: g('oneLiner') || ('我发布的' + (CATEGORY_META[g('category')] || {}).label + '信息'),
+      content: content,
+      source: role,                       /* 学校 / 学院 / 老师 / 同学 四类之一 */
+      sourceName: me.org ? me.name + '（' + me.org + '）' : me.name,
+      category: cat,
       tags: [],
+      oneLiner: content.replace(/\s+/g, ' ').slice(0, 60),
       schedule: startAt ? [{
         label: '活动时间',
         at: new Date(startAt).toISOString(),
         place: place || null,
         placeTBD: !place
       }] : [],
-      deadlines: dl ? [{ label: '报名截止', at: new Date(dl).toISOString() }] : [],
+      deadlines: [{ label: '报名截止', at: new Date(dl).toISOString() }],
       audience: g('audience') || '未注明',
       zeroBase: null,
       needSignup: need === 'yes' ? true : need === 'no' ? false : null,
       fee: g('fee') || null,
-      commitment: g('commitment') || null,
+      commitment: null,
       capacity: g('capacity') ? Number(g('capacity')) : null,
       contact: g('contact') || null,
       missing: missing,
-      raw: '【学生自主发布 · 未核实】' + title +
-        (startAt ? '；时间 ' + fmtDateTime(new Date(startAt).toISOString()) : '') +
+      author: author,
+      verified: true,                     /* 已登录并勾选确认，算身份已确认 */
+      raw: '【' + SOURCES[role].label + '】' + me.name + (me.org ? '（' + me.org + '）' : '') +
+        '：' + content +
+        (startAt ? '；活动时间 ' + fmtDateTime(new Date(startAt).toISOString()) : '') +
         (place ? '；地点 ' + place : '') +
+        '；截止 ' + fmtDateTime(new Date(dl).toISOString()) +
         (g('contact') ? '；联系方式 ' + g('contact') : ''),
       userPost: true,
       createdAt: new Date().toISOString()
     };
 
-    if (missing.length) {
+    /* 只有同学自主发布才自动挂风险提示；学院/学校/老师发布不预设风险 */
+    if (role === 'student' && missing.length) {
       item.risk = {
         level: 'low',
-        reason: '这条由学生发布，发布时未填写：' + missing.join('、') + '。内容未经核实，请注意甄别。',
+        reason: '这条由同学自行发布，发布时未填写：' + missing.join('、') + '。内容未经核实，请注意甄别。',
         advice: ['信息为同学自行发布，参与前建议先与发布者确认']
       };
     }
@@ -1414,7 +1921,7 @@
     state.tab = 'radar';
     render();
     toast(missing.length
-      ? '已发布。有 ' + missing.length + ' 项信息没填，页面上会提示同学注意'
+      ? '已发布（门类 ' + cat + '）。有 ' + missing.length + ' 项补充信息没填，页面上会提示同学注意'
       : '发布成功，已经出现在列表里了');
   });
 
@@ -1424,6 +1931,9 @@
   window.__campusRadar = {
     render: render, statusOf: statusOf, allItems: allItems, completeness: completeness,
     newbieFit: newbieFit, state: state, renderDetail: renderDetail, toICS: toICS,
+    deadlineBuckets: deadlineBuckets, countdownText: countdownText, renderAuth: renderAuth,
+    registerUser: registerUser, loginUser: loginUser, currentUser: currentUser,
+    publisherLine: publisherLine, catChip: catChip,
     RAW_ITEMS: RAW_ITEMS
   };
 
