@@ -11,7 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const ROOT = path.join(__dirname, 'projects', 'campus-radar');
+const ROOT = __dirname;
 
 /* ---------- 最小 DOM 桩 ---------- */
 function makeEl(id) {
@@ -80,7 +80,7 @@ function check(name, cond, extra) {
 }
 function section(t) { console.log('\n\x1b[1m' + t + '\x1b[0m'); }
 
-/* 锁定时间基准：考核当日 14:00 */
+/* 锁定时间基准：数据的时间背景 2026-09-19 14:00 */
 R.state.timebase = '2026-09-19T14:00:00';
 const NOW = new Date(R.state.timebase);
 
@@ -198,7 +198,7 @@ function tryRender(name, fn) {
   }
 }
 
-const radarHTML = tryRender('全部信息页', () => { R.state.tab = 'radar'; R.render(); return getEl('view').innerHTML; });
+const radarHTML = tryRender('搜索页', () => { R.state.tab = 'search'; R.render(); return getEl('view').innerHTML; });
 check('列表里出现了已合并的角标', radarHTML.includes('已合并'));
 check('列表里出现了新生适配标签', radarHTML.includes('fit--ok'));
 check('高风险条目有视觉标记', radarHTML.includes('card--risky'));
@@ -213,7 +213,7 @@ const mineHTML = tryRender('我的页', () => { R.state.tab = 'mine'; R.render()
 check('我的页有发布入口', mineHTML.includes('data-publish'));
 
 /* 筛选 */
-R.state.tab = 'radar';
+R.state.tab = 'search';
 R.state.newbie = true;
 let filtered = tryRender('新生模式筛选后', () => { R.render(); return getEl('view').innerHTML; });
 check('新生模式下排除了 13 号', !filtered.includes('科研助理招募'));
@@ -357,6 +357,118 @@ Promise.resolve()
       line.includes('已确认身份') && line.includes('张三') && line.includes('计算机学院'));
     const line2 = R.publisherLine({ userPost: true, verified: false, author: { name: '李四' } });
     check('未确认身份的发布者会被标出', line2.includes('未确认'));
+  })
+  .then(() => {
+    /* ============ 11. 账号发布的内容能被搜到（回归） ============
+     * 之前的搜索匹配范围漏了 content 正文，还引用了一个不存在的
+     * it.publisher 字段，导致自己发布的内容搜不出来。 */
+    section('11. 账号发布的内容能被搜到');
+
+    const myPost = {
+      id: 'U1', title: '周末羽毛球约球',
+      content: '这周六下午四点，在体育馆三号场打球，计划六到八人，场地费大家AA，想来的私我拉群。',
+      source: 'student', sourceName: '张三（计算机学院）',
+      category: 'F', userPost: true, verified: true, needSignup: true,
+      oneLiner: '这周六下午四点，在体育馆三号场打球',
+      author: { name: '张三', org: '计算机学院', role: 'student' },
+      schedule: [{ label: '活动时间', at: '2026-09-20T16:00', place: '体育馆三号场' }],
+      deadlines: [{ label: '报名截止', at: '2026-09-21T18:00' }],
+      audience: '全校学生', tags: [], missing: [], raw: '【同学自主发布】张三：这周六下午四点…'
+    };
+    store['cr_posts'] = JSON.stringify([myPost]);
+
+    check('发布的内容进入了列表', R.allItems().some(i => i.id === 'U1'));
+
+    const hay = R.searchText(myPost);
+    check('搜索范围包含发布正文', hay.includes('体育馆三号场') && hay.includes('场地费'));
+    check('搜索范围包含发布者姓名', hay.includes('张三'));
+    check('搜索范围包含门类名称', hay.includes('学生个人发起'));
+    check('不再引用不存在的 publisher 字段', !/publisher/.test(hay));
+
+    /* 真的走一遍筛选：搜正文里的词 */
+    const tries = [
+      ['体育馆三号场', '正文里的地点'],
+      ['场地费', '正文里的词'],
+      ['张三', '发布者姓名'],
+      ['计算机学院', '发布者单位'],
+      ['学生个人发起', '门类名']
+    ];
+    tries.forEach(([q, what]) => {
+      R.state.q = q;
+      const hit = R.visibleItems().some(i => i.id === 'U1');
+      check('搜「' + q + '」（' + what + '）能搜到自己发布的内容', hit, '没搜到');
+    });
+    R.state.q = '量子力学';
+    check('搜不相关的词时自己发布的内容不会被误命中',
+      !R.visibleItems().some(i => i.id === 'U1'));
+    R.state.q = '';
+  })
+  .then(() => {
+    /* ============ 12. 搜索页结构（中文输入的前提） ============ */
+    section('12. 搜索页结构');
+
+    R.state.tab = 'search';
+    R.render();
+    const shell = getEl('view').innerHTML;
+
+    check('搜索框在结果区之外（输入时不会重建输入框）',
+      shell.includes('id="q"') && shell.includes('id="results"') &&
+      shell.indexOf('id="q"') < shell.indexOf('id="results"'));
+    check('页签里没有「全部信息」，改成「搜索」',
+      !shell.includes('全部信息') && R.renderSearch().includes('全部信息') === false);
+
+    /* 只重绘结果区时，搜索框所在的外壳不受影响 */
+    R.state.q = '零基础';
+    R.renderResultsOnly();
+    check('只重绘结果区能正常出结果', getEl('results').innerHTML.includes('card__title'));
+    R.state.q = '';
+  })
+  .then(() => {
+    /* ============ 13. 报名与报名名单 ============ */
+    section('13. 报名与报名名单');
+
+    check('手机号校验：11 位合法号', R.validPhone('13800138000') === true);
+    check('手机号校验：位数不够拒绝', R.validPhone('1380013') === false);
+    check('手机号校验：非 1 开头拒绝', R.validPhone('23800138000') === false);
+    check('手机号校验：带字母拒绝', R.validPhone('1380013800a') === false);
+
+    const it0 = R.allItems().filter(i => i.id === 'U1')[0];
+    check('还没人报名时，报名名单为空', R.signupsOf('U1').length === 0);
+    check('发布者看到的是「还没有人报名」', R.signupSection(it0).includes('还没有人报名'));
+
+    /* 另一个同学来报名 */
+    R.addSignup('U1', {
+      id: 'R1', name: '李四', phone: '13800138000', org: '外国语学院',
+      account: '李四', at: new Date().toISOString()
+    });
+    R.addSignup('U1', {
+      id: 'R2', name: '王五', phone: '13900139000', org: '',
+      account: '王五', at: new Date().toISOString()
+    });
+
+    check('两条报名已记录', R.signupsOf('U1').length === 2);
+
+    /* 当前登录的是张三，U1 的 author 也是张三 → 发布者视角 */
+    const ownerView = R.signupSection(it0);
+    check('发布者能看到报名同学的姓名', ownerView.includes('李四') && ownerView.includes('王五'));
+    check('发布者能看到报名同学的手机号', ownerView.includes('13800138000') && ownerView.includes('13900139000'));
+    check('发布者能看到报名同学的学院', ownerView.includes('外国语学院'));
+    check('发布者可以移除某条报名', ownerView.includes('data-delreg="U1:R1"'));
+    check('发布者可以一键复制名单', ownerView.includes('data-copyregs="U1"'));
+
+    /* 「我的」页面也要能看到名单 */
+    const panel = R.regPanel(it0);
+    check('「我的」里显示报名人数', panel.includes('2 人报名'));
+    check('「我的」里带出手机号', panel.includes('13800138000'));
+
+    /* 活动卡片上出现报名人数角标 */
+    R.state.tab = 'search';
+    R.render();
+    check('列表卡片上有报名人数角标', getEl('view').innerHTML.includes('2 人报名'));
+
+    /* 报名区块只出现在账号发布的内容上，官方信息不该有 */
+    const official = R.allItems().filter(i => i.id === '01')[0];
+    check('官方信息不会出现报名区块', R.signupSection(official) === '');
   })
   .then(() => {
     /* ===================== 汇总 ===================== */
