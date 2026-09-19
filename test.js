@@ -68,6 +68,7 @@ sandbox.window.confirm = () => true;
 
 vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(path.join(ROOT, 'js/data.js'), 'utf8'), sandbox, { filename: 'data.js' });
+vm.runInContext(fs.readFileSync(path.join(ROOT, 'js/moderation.js'), 'utf8'), sandbox, { filename: 'moderation.js' });
 vm.runInContext(fs.readFileSync(path.join(ROOT, 'js/app.js'), 'utf8'), sandbox, { filename: 'app.js' });
 
 const R = sandbox.window.__campusRadar;
@@ -469,6 +470,156 @@ Promise.resolve()
     /* 报名区块只出现在账号发布的内容上，官方信息不该有 */
     const official = R.allItems().filter(i => i.id === '01')[0];
     check('官方信息不会出现报名区块', R.signupSection(official) === '');
+  })
+  .then(() => {
+    /* ============ 14. 内容审核 ============ */
+    section('14. 内容审核规则');
+
+    const mod = sandbox.window.checkContent;
+    check('审核模块已加载', typeof mod === 'function' && sandbox.window.MODERATION_RULES.length >= 7);
+
+    /* 该拦的必须拦 */
+    const mustBlock = [
+      ['全校第一的编程训练营', '极限用语-排名'],
+      ['史上最强学习方法', '极限用语-最X'],
+      ['100% 包过', '绝对化承诺'],
+      ['这个偏方可以根治近视', '医疗功效'],
+      ['无副作用，药到病除', '医疗功效'],
+      ['稳赚不赔，零风险', '金融收益承诺'],
+      ['扫码进群领资料', '站外导流'],
+      ['加微信详聊', '站外导流'],
+      ['算命改运，开光消灾', '封建迷信'],
+      ['零门槛日结，动动手指就赚钱', '可疑兼职'],
+      ['代写论文，包过', '学术违规'],
+      ['全国第一的辅导班', '极限用语-排名'],
+      ['错过再无，最后一天', '虚构紧迫感']
+    ];
+    mustBlock.forEach(([text, why]) => {
+      const r = mod(text);
+      check('拦截「' + text + '」（' + why + '）', r.ok === false, '没拦到');
+    });
+
+    /* 这些是校园里的正常表述，一个字都不能误伤 */
+    const mustPass = [
+      '第一教学楼 A201 开讲',
+      '第一次参加的学生也欢迎',
+      '最好提前十分钟到场',
+      '本周六下午在体育馆三号场打球',
+      '微信号：abc123（只给发布者看）',
+      '蓝桥杯程序设计校内训练营，零基础可参加',
+      '招募开发、设计、材料成员，每周投入4小时',
+      '校园公益志愿服务活动，预计服务8小时',
+      'Python 学习资料合集，网盘长期开放',
+      '科研助理招募，仅限大二及以上'
+    ];
+    mustPass.forEach(text => {
+      const r = mod(text);
+      check('不误伤正常表述「' + text.slice(0, 18) + '…」',
+        r.ok === true, r.hits.map(h => h.catName + ':' + h.word).join(' '));
+    });
+
+    /* 命中信息要能告诉用户改哪里 */
+    const hit = mod('全校第一，100% 包过，加微信详聊');
+    check('命中结果里带上了具体词', hit.hits.length >= 3 &&
+      hit.hits.some(h => h.word.includes('全校第一')) &&
+      hit.hits.some(h => h.word.includes('100%')));
+    check('命中结果里带上了规则说明', hit.hits.every(h => h.catName && h.desc && h.icon));
+
+    const f = sandbox.window.checkFields({ '标题': '正常标题', '发布内容': '稳赚不赔' });
+    check('多字段检查会标出是哪一栏出的问题',
+      f.ok === false && f.hits[0].field === '发布内容');
+
+    check('空内容直接放行', mod('').ok === true && mod('   ').ok === true);
+  })
+  .then(() => {
+    /* ============ 15. 搜索高亮与概览同步 ============ */
+    section('15. 搜索高亮与概览同步');
+
+    R.state.tab = 'search';
+    R.state.q = '体育馆';
+    const hlHTML = R.renderResults();
+    check('命中的关键词被高亮标出', hlHTML.includes('<mark class="hl">体育馆</mark>'), '没高亮');
+
+    R.state.q = '不存在的词xyz';
+    const noHl = R.renderResults();
+    check('没有命中时不产生高亮标签', !noHl.includes('<mark class="hl">'));
+    R.state.q = '';
+
+    /* 概览只保留「条信息」和「N 天内截止」两个数 */
+    const res = R.renderResults();
+    check('概览不再显示「条已合并」', !res.includes('条已合并'));
+    check('概览不再显示「条账号发布」', !res.includes('条账号发布'));
+    check('概览保留「条信息」', res.includes('条信息'));
+    check('概览保留「3 天内截止」', res.includes('3 天内截止'));
+
+    /* 条数必须跟着账号发布走 */
+    const before = (res.match(/(\d+)<\/b><span>条信息/) || [])[1];
+    store['cr_posts'] = JSON.stringify(JSON.parse(store['cr_posts']).concat([{
+      id: 'U2', title: '找 AI 工具搭子', content: '想找人一起交流 AI 工具，零基础也行。',
+      source: 'student', category: 'F', userPost: true, verified: true, needSignup: true,
+      author: { name: '张三', org: '计算机学院' },
+      deadlines: [{ label: '报名截止', at: '2026-09-25T18:00' }],
+      audience: '全校学生', tags: [], missing: []
+    }]));
+    const after = (R.renderResults().match(/(\d+)<\/b><span>条信息/) || [])[1];
+    check('账号发布后，概览条数同步 +1（' + before + ' → ' + after + '）',
+      Number(after) === Number(before) + 1, before + ' → ' + after);
+    check('新发布的内容同时能被搜到',
+      (R.state.q = '搭子', R.visibleItems().some(i => i.id === 'U2')));
+    R.state.q = '';
+  })
+  .then(() => {
+    /* ============ 16. 「我的」三分类 ============ */
+    section('16. 「我的」三分类与左侧项目栏');
+
+    R.state.tab = 'mine';
+    R.render();
+    const mine = getEl('view').innerHTML;
+
+    check('有左侧项目栏', mine.includes('class="mineSide"'));
+    check('分类一：我的收藏', mine.includes('我的收藏') && mine.includes('data-jump="sec-fav"'));
+    check('分类二：我参与的', mine.includes('我参与的') && mine.includes('data-jump="sec-join"'));
+    check('分类三：我发布的', mine.includes('我发布的') && mine.includes('data-jump="sec-pub"'));
+    check('三个分类各自有锚点', mine.includes('id="sec-fav"') &&
+      mine.includes('id="sec-join"') && mine.includes('id="sec-pub"'));
+
+    check('已发布的内容出现在「我发布的」里', mine.includes('周末羽毛球约球'));
+
+    /* 注意这一条：我发的内容默认**不**出现在「我参与的」里 ——
+       没参加过就是没参加过，不能因为是自己发的就算参与。 */
+    const onlyPub = (mine.match(/周末羽毛球约球/g) || []).length;
+    check('自己发的内容不会自动算进「我参与的」', onlyPub === 1, '出现 ' + onlyPub + ' 次');
+
+    /* 同一条内容可以同时出现在多个分类：把它收藏，就同时进了「收藏」和「发布」 */
+    R.favs.push('U1');
+    R.render();
+    const mine2 = getEl('view').innerHTML;
+    check('同一条内容可以同时出现在多个分类里（收藏 + 发布）',
+      (mine2.match(/周末羽毛球约球/g) || []).length >= 2,
+      '出现 ' + (mine2.match(/周末羽毛球约球/g) || []).length + ' 次');
+
+    /* 「我参与的」：报名了别人的活动 */
+    store['cr_posts'] = JSON.stringify(JSON.parse(store['cr_posts']).concat([{
+      id: 'U3', title: '李四发起的读书会', content: '每周三晚一起读书。',
+      source: 'student', category: 'C', userPost: true, verified: true, needSignup: true,
+      author: { name: '李四', org: '文学院' },
+      deadlines: [{ label: '报名截止', at: '2026-09-26T18:00' }],
+      audience: '全校学生', tags: [], missing: []
+    }]));
+    R.addSignup('U3', { id: 'R9', name: '张三', phone: '13700137000',
+      org: '计算机学院', account: '张三', at: new Date().toISOString() });
+    R.render();
+    const mine3 = getEl('view').innerHTML;
+    check('报名别人的活动后，它进入「我参与的」', mine3.includes('李四发起的读书会'));
+    check('「我参与的」里显示我自己的报名信息', mine3.includes('我已报名') && mine3.includes('13700137000'));
+    check('左侧栏统计了报名总数', mine3.includes('收到') && mine3.includes('条报名'));
+
+    /* 取消收藏后应当从「我的收藏」消失 */
+    R.favs.length = 0;
+    R.render();
+    check('取消收藏后从「我的收藏」消失',
+      !getEl('view').innerHTML.includes('id="sec-fav"') === false &&
+      getEl('view').innerHTML.includes('还没有收藏'));
   })
   .then(() => {
     /* ===================== 汇总 ===================== */
