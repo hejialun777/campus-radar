@@ -21,7 +21,8 @@
     fb: 'cr_feedback',
     users: 'cr_users',
     session: 'cr_session',
-    signups: 'cr_signups'
+    signups: 'cr_signups',
+    baseVer: 'cr_timebase_ver'
   };
 
   /* 元数据；data.js 没加载时兜底，避免整页崩掉 */
@@ -44,7 +45,18 @@
   var DEFAULT_BASE = (typeof window !== 'undefined' && window.DEFAULT_TIMEBASE) || '2026-09-16T09:00:00';
   var REAL = 'real';
 
+  /* 时间基准的存储版本号。改动默认值时把它 +1，
+   * 老访客下次打开就会自动切到新的默认值 —— 否则浏览器里存的旧值
+   * （比如旧版本的 9/19 预设，或者"真实时间"）会一直盖住新默认。 */
+  var TB_VERSION = 2;
+
   function initialTimebase() {
+    var ver = readLS(LS.baseVer, 0);
+    if (ver !== TB_VERSION) {
+      writeLS(LS.baseVer, TB_VERSION);
+      writeLS(LS.base, DEFAULT_BASE);
+      return DEFAULT_BASE;
+    }
     var v = readLS(LS.base, null);
     if (v === null || v === undefined || v === '') return DEFAULT_BASE;
     return v;

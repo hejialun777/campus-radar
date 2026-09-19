@@ -721,16 +721,36 @@ Promise.resolve()
       R.DEFAULT_BASE === '2026-09-16T09:00:00', R.DEFAULT_BASE);
 
     /* 清掉本地存的基准，模拟全新访客 */
-    delete store['cr_timebase'];
+    delete store['cr_timebase']; delete store['cr_timebase_ver'];
     check('全新访客首次打开 → 用默认基准', R.initialTimebase() === R.DEFAULT_BASE);
 
-    /* 存了 "real" 就用真实时间 */
+    /* 关键回归：老访客浏览器里存着旧版本的值，不能被它一直盖住新默认。
+       之前就踩过这个坑——用户点过「真实时间」，而真实日期恰好是 9/19，
+       于是新设的 9/16 默认值永远显示不出来。 */
+    delete store['cr_timebase_ver'];
     store['cr_timebase'] = JSON.stringify('real');
-    check('存了 real → 用真实时间', R.initialTimebase() === 'real');
+    check('老访客存了 real → 仍然迁移到新的默认基准（不被真实时间盖住）',
+      R.initialTimebase() === R.DEFAULT_BASE, R.initialTimebase());
 
-    /* 存了 ISO 就用那个时间 */
+    delete store['cr_timebase_ver'];
+    store['cr_timebase'] = JSON.stringify('2026-09-19T14:00:00');
+    check('老访客存着旧预设 9/19 14:00 → 迁移到新的默认基准',
+      R.initialTimebase() === R.DEFAULT_BASE, R.initialTimebase());
+
+    /* 迁移过一次之后，用户主动选的时间要能保持住，不能每次都被重置 */
+    store['cr_timebase_ver'] = JSON.stringify(2);
+    store['cr_timebase'] = JSON.stringify('real');
+    check('迁移后用户主动选「真实时间」→ 保持 real',
+      R.initialTimebase() === 'real', R.initialTimebase());
+
     store['cr_timebase'] = JSON.stringify('2026-09-20T10:00:00');
-    check('存了具体时间 → 用那个时间', R.initialTimebase() === '2026-09-20T10:00:00');
+    check('迁移后用户锁定其他时间 → 保持那个时间',
+      R.initialTimebase() === '2026-09-20T10:00:00', R.initialTimebase());
+
+    /* 迁移后键被删掉，应当回落到默认值 */
+    delete store['cr_timebase'];
+    check('迁移后存储被清空 → 回落到默认基准',
+      R.initialTimebase() === R.DEFAULT_BASE, R.initialTimebase());
 
     /* 设置里的两个按钮 */
     R.state.timebase = R.DEFAULT_BASE;
