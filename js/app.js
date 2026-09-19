@@ -20,7 +20,8 @@
     base: 'cr_timebase',
     fb: 'cr_feedback',
     users: 'cr_users',
-    session: 'cr_session'
+    session: 'cr_session',
+    signups: 'cr_signups'
   };
 
   /* 元数据；data.js 没加载时兜底，避免整页崩掉 */
@@ -133,6 +134,154 @@
       writeLS(LS.session, sessionOf(u));
       return { ok: true, user: u };
     });
+  }
+
+  /* ========================= 报名 =========================
+   * 结构：{ [活动id]: [ {id, name, phone, org, account, at} ] }
+   * 发布者在「我的」和自己的活动详情里可以看到报名名单（含手机号）。
+   * 注意：和账号一样存在本机浏览器里，跨设备不会同步。
+   * ====================================================== */
+
+  function signupsOf(itemId) {
+    var all = readLS(LS.signups, {});
+    return all[itemId] || [];
+  }
+
+  function setSignups(itemId, arr) {
+    var all = readLS(LS.signups, {});
+    if (arr.length) all[itemId] = arr; else delete all[itemId];
+    writeLS(LS.signups, all);
+  }
+
+  function regCount(itemId) { return signupsOf(itemId).length; }
+
+  function addSignup(itemId, rec) {
+    var arr = signupsOf(itemId);
+    arr.push(rec);
+    setSignups(itemId, arr);
+  }
+
+  function mySignup(itemId) {
+    var me = currentUser();
+    if (!me) return null;
+    return signupsOf(itemId).filter(function (s) { return s.account === me.name; })[0] || null;
+  }
+
+  function removeMySignup(itemId) {
+    var me = currentUser();
+    if (!me) return;
+    setSignups(itemId, signupsOf(itemId).filter(function (s) { return s.account !== me.name; }));
+  }
+
+  /* 中国大陆手机号 */
+  function validPhone(p) { return /^1[3-9]\d{9}$/.test(String(p || '').trim()); }
+
+  /* 报名区块：发布者看到名单，其他人看到报名表单 */
+  function signupSection(item) {
+    if (!item.userPost) return '';
+    if (item.needSignup === false) return '';
+
+    var me = currentUser();
+    var regs = signupsOf(item.id);
+    var mine = mySignup(item.id);
+    var owner = isMine(item);
+    var h = '';
+
+    h += '<section class="sec sec--signup">';
+    h += '<h3>📝 报名' + (regs.length ? '（' + regs.length + ' 人）' : '') + '</h3>';
+
+    if (owner) {
+      /* 发布者视角：看得到报名同学的姓名和手机号 */
+      h += '<p class="sec__desc">这是你发布的内容。下面是同学的报名信息，只有你（发布者）能看到。</p>';
+      if (!regs.length) {
+        h += '<p class="signupEmpty">还没有人报名。把这条分享到群里，同学点「我要报名」就会出现在这里。</p>';
+      } else {
+        h += '<div class="regList">' + regs.map(function (s, i) {
+          return '<div class="regRow">' +
+            '<span class="regRow__no">' + (i + 1) + '</span>' +
+            '<div class="regRow__body">' +
+              '<div class="regRow__name">' + esc(s.name) +
+                (s.org ? '<span class="regRow__org">' + esc(s.org) + '</span>' : '') + '</div>' +
+              '<a class="regRow__tel" href="tel:' + esc(s.phone) + '">' + esc(s.phone) + '</a>' +
+              '<span class="regRow__at">' + esc(relTimeShort(s.at)) + ' 报名</span>' +
+            '</div>' +
+            '<button type="button" class="mini mini--danger" data-delreg="' +
+              esc(item.id) + ':' + esc(s.id) + '">移除</button>' +
+          '</div>';
+        }).join('') + '</div>';
+        h += '<button type="button" class="btn btn--ghost btn--wide" data-copyregs="' + esc(item.id) + '">' +
+          '📋 复制报名名单</button>';
+      }
+    } else if (mine) {
+      h += '<div class="signedBox">' +
+        '<b>✅ 你已经报过名了</b>' +
+        '<p>姓名 ' + esc(mine.name) + ' · 手机 ' + esc(mine.phone) + '</p>' +
+        '<p class="tbd">报名信息已提交给发布者</p>' +
+        '</div>' +
+        '<button type="button" class="btn btn--ghost btn--wide" data-unsignup="' + esc(item.id) + '">取消报名</button>';
+    } else if (!me) {
+      h += '<p class="sec__desc">报名需要先登录，这样发布者才知道是谁报的名、怎么联系你。</p>' +
+        '<button type="button" class="btn btn--primary btn--wide" data-auth="open">登录后报名</button>';
+    } else {
+      h += '<form class="signupForm" id="signupForm" data-item="' + esc(item.id) + '">' +
+        '<div class="fld fld--2col">' +
+          '<label class="fld"><span>姓名 <b>*</b></span>' +
+            '<input name="sname" required maxlength="20" value="' + esc(me.name) + '"></label>' +
+          '<label class="fld"><span>手机号 <b>*</b></span>' +
+            '<input name="sphone" required inputmode="numeric" maxlength="11" placeholder="11 位手机号"></label>' +
+        '</div>' +
+        '<label class="fld"><span>学院 / 班级（选填）</span>' +
+          '<input name="sorg" maxlength="30" value="' + esc(me.org || '') + '"></label>' +
+        '<p class="sec__desc sec__desc--tip">手机号只提供给发布者，用于联系你，不会公开显示。</p>' +
+        '<div class="signupNote" id="signupNote"></div>' +
+        '<button type="submit" class="btn btn--primary btn--wide">提交报名</button>' +
+      '</form>';
+    }
+
+    h += '</section>';
+    return h;
+  }
+
+  /* 「我的」页面里，每条我发布的内容下面挂一块报名名单 */
+  function regPanel(item) {
+    if (item.needSignup === false) return '';
+    var regs = signupsOf(item.id);
+
+    if (!regs.length) {
+      return '<div class="regPanel regPanel--empty">' +
+        '📝 还没有人报名 · 同学在活动详情里可以填姓名和手机号报名</div>';
+    }
+
+    return '<div class="regPanel">' +
+      '<div class="regPanel__head">📝 <b>' + regs.length + ' 人报名</b>' +
+        '<button type="button" class="mini" data-copyregs="' + esc(item.id) + '">复制名单</button>' +
+      '</div>' +
+      '<div class="regList">' + regs.map(function (s, i) {
+        return '<div class="regRow">' +
+          '<span class="regRow__no">' + (i + 1) + '</span>' +
+          '<div class="regRow__body">' +
+            '<div class="regRow__name">' + esc(s.name) +
+              (s.org ? '<span class="regRow__org">' + esc(s.org) + '</span>' : '') + '</div>' +
+            '<a class="regRow__tel" href="tel:' + esc(s.phone) + '">' + esc(s.phone) + '</a>' +
+            '<span class="regRow__at">' + esc(relTimeShort(s.at)) + ' 报名</span>' +
+          '</div>' +
+          '<button type="button" class="mini mini--danger" data-delreg="' +
+            esc(item.id) + ':' + esc(s.id) + '">移除</button>' +
+        '</div>';
+      }).join('') + '</div>' +
+    '</div>';
+  }
+
+  /* 「3 分钟前」这种短格式，用于报名时间 */
+  function relTimeShort(iso) {
+    if (!iso) return '';
+    var diff = currentTime().getTime() - new Date(iso).getTime();
+    var mins = Math.round(diff / 60000);
+    if (mins < 1) return '刚刚';
+    if (mins < 60) return mins + ' 分钟前';
+    var hrs = Math.round(mins / 60);
+    if (hrs < 24) return hrs + ' 小时前';
+    return Math.round(hrs / 24) + ' 天前';
   }
 
   function startOfDay(d) { var x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
@@ -400,10 +549,12 @@
     if (item.zeroBase === true) {
       return { key: 'ok', label: '零基础可参加', icon: '✅' };
     }
-    if (item.zeroBase === null && (item.missing || []).length >= 3) {
-      return { key: 'warn', label: '信息不明，需先确认', icon: '⚠️' };
-    }
-    if (item.zeroBase === null) {
+    /* 注意：账号发布的内容不会填 zeroBase，是 undefined 而不是 null。
+       之前只判 null，导致自己发的内容被错误标成「需一定基础」。 */
+    if (item.zeroBase == null) {
+      if ((item.missing || []).length >= 3) {
+        return { key: 'warn', label: '信息不明，需先确认', icon: '⚠️' };
+      }
       return { key: 'warn', label: '未说明基础要求', icon: '⚠️' };
     }
     return { key: 'warn', label: '需一定基础', icon: '⚠️' };
@@ -613,6 +764,8 @@
           sourceChip(item) +
           (updates ? '<span class="chip chip--merged">🔗 已合并 ' + updates + ' 条后续通知</span>' : '') +
           (isMine(item) ? '<span class="chip chip--mine">我发布的</span>' : '') +
+          (item.userPost && regCount(item.id)
+            ? '<span class="chip chip--reg">📝 ' + regCount(item.id) + ' 人报名</span>' : '') +
         '</div>' +
         '<h3 class="card__title">' + esc(item.title) + '</h3>' +
         '<p class="card__one">' + esc(item.oneLiner || '') + '</p>' +
@@ -982,6 +1135,7 @@
     } else {
       html += '<div class="cards">' + posts.map(function (it) {
         return '<div class="cardWrap">' + cardHTML(it, statusOf(it, now)) +
+          regPanel(it) +
           '<div class="cardWrap__tools">' +
             '<button class="mini" data-edit="' + esc(it.id) + '">编辑</button>' +
             '<button class="mini mini--danger" data-del="' + esc(it.id) + '">删除</button>' +
@@ -1174,6 +1328,9 @@
         '<p class="sec__desc sec__desc--tip">页面上的所有结论都基于以上原文，没有添加材料之外的事实。</p>' +
         '</details></section>';
     }
+
+    /* 报名（只对账号发布的内容出现） */
+    h += signupSection(item);
 
     /* 反馈 */
     h += '<section class="sec sec--fb">' +
@@ -1676,8 +1833,47 @@
     var t = e.target.closest('[data-tab],[data-open],[data-fav],[data-join],[data-filt],[data-toggle],' +
       '[data-reset],[data-clear-q],[data-goto-today],[data-publish],[data-edit],[data-del],' +
       '[data-close-sheet],[data-base],[data-wipe],[data-ics],[data-copy],[data-fb],' +
-      '[data-auth],[data-authmode]');
+      '[data-auth],[data-authmode],[data-delreg],[data-unsignup],[data-copyregs]');
     if (!t) return;
+
+    /* ---- 报名名单：发布者移除某条报名 ---- */
+    if (t.hasAttribute('data-delreg')) {
+      var parts = t.getAttribute('data-delreg').split(':');
+      var pid = parts[0], sid = parts[1];
+      if (confirm('把这条报名移出名单？')) {
+        setSignups(pid, signupsOf(pid).filter(function (s) { return s.id !== sid; }));
+        toast('已移除');
+        render(); refreshSheet();
+      }
+      return;
+    }
+
+    /* ---- 报名者自己取消报名 ---- */
+    if (t.hasAttribute('data-unsignup')) {
+      var uid = t.getAttribute('data-unsignup');
+      if (!confirm('取消报名？发布者的名单里会去掉你的信息。')) return;
+      removeMySignup(uid);
+      toast('已取消报名');
+      render(); refreshSheet();
+      return;
+    }
+
+    /* ---- 复制报名名单（姓名 + 手机号）---- */
+    if (t.hasAttribute('data-copyregs')) {
+      var cid = t.getAttribute('data-copyregs');
+      var item0 = getItem(cid);
+      var regs = signupsOf(cid);
+      if (!regs.length) { toast('还没有人报名'); return; }
+      var lines = regs.map(function (s, i) {
+        return (i + 1) + '. ' + s.name + (s.org ? '（' + s.org + '）' : '') + '  ' + s.phone;
+      });
+      var txt = '【' + (item0 ? item0.title : '报名名单') + '】共 ' + regs.length + ' 人\n' + lines.join('\n');
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(txt).then(function () { toast('名单已复制'); },
+          function () { fallbackCopy(txt); });
+      } else { fallbackCopy(txt); }
+      return;
+    }
 
     /* ---- 账号 ---- */
     if (t.hasAttribute('data-authmode')) {
@@ -1919,6 +2115,42 @@
     }).catch(function () { say('注册失败，请重试'); });
   });
 
+  /* 报名表单提交 */
+  document.addEventListener('submit', function (e) {
+    if (!e.target || e.target.id !== 'signupForm') return;
+    e.preventDefault();
+
+    var f = e.target;
+    var itemId = f.getAttribute('data-item');
+    var g = function (n) { var el = f.elements[n]; return el ? String(el.value || '').trim() : ''; };
+    var note = document.getElementById('signupNote');
+    var say = function (msg) { if (note) { note.className = 'signupNote signupNote--err'; note.textContent = msg; } };
+
+    var me = currentUser();
+    if (!me) { closeSheet(); openAuth('login'); toast('报名前需要先登录'); return; }
+
+    var item = getItem(itemId);
+    if (!item) { say('这条内容已经不在了'); return; }
+
+    var name = g('sname'), phone = g('sphone');
+    if (!name) { say('请填写姓名'); return; }
+    if (!validPhone(phone)) { say('手机号格式不对，请填 11 位手机号（1 开头）'); return; }
+    if (mySignup(itemId)) { say('你已经报过名了'); return; }
+
+    addSignup(itemId, {
+      id: 'R' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      name: name,
+      phone: phone,
+      org: g('sorg'),
+      account: me.name,
+      at: new Date().toISOString()
+    });
+
+    toast('报名成功，发布者能看到你的姓名和手机号');
+    render();
+    refreshSheet();
+  });
+
   /* 发布表单提交 */
   document.addEventListener('submit', function (e) {
     if (!e.target || e.target.id !== 'postForm') return;
@@ -2030,7 +2262,10 @@
     newbieFit: newbieFit, state: state, renderDetail: renderDetail, toICS: toICS,
     deadlineBuckets: deadlineBuckets, countdownText: countdownText, renderAuth: renderAuth,
     registerUser: registerUser, loginUser: loginUser, currentUser: currentUser,
-    publisherLine: publisherLine, catChip: catChip,
+    publisherLine: publisherLine, catChip: catChip, searchText: searchText,
+    signupsOf: signupsOf, addSignup: addSignup, mySignup: mySignup, validPhone: validPhone,
+    signupSection: signupSection, regPanel: regPanel, renderSearch: renderSearch,
+    renderResults: renderResults, visibleItems: visibleItems, renderResultsOnly: renderResultsOnly,
     RAW_ITEMS: RAW_ITEMS
   };
 
