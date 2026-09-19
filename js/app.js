@@ -31,6 +31,10 @@
   var SOURCE_ORDER = (typeof window !== 'undefined' && window.SOURCE_ORDER) || [];
   var COLLEGES = (typeof window !== 'undefined' && window.COLLEGES) || [];
   var SOURCE_UNKNOWN = 'unknown';
+
+  /* 内容审核（js/moderation.js）；没加载时降级为"全部放行"，不影响主流程 */
+  var checkFields = (typeof window !== 'undefined' && window.checkFields) ||
+    function () { return { ok: true, hits: [] }; };
   var WINDOWS = (typeof window !== 'undefined' && window.DEADLINE_WINDOWS) || { urgentDays: 3, soonDays: 7 };
 
   function readLS(key, fallback) {
@@ -420,6 +424,17 @@
     return { key: 'ongoing', label: '长期开放', tone: 'green', tier: 7, deadline: null };
   }
 
+  /* 按"现在该先看哪个"排序：状态优先级 → 最近的时间点 */
+  function byUrgency(now) {
+    return function (a, b) {
+      var sa = statusOf(a, now), sb = statusOf(b, now);
+      if (sa.tier !== sb.tier) return sa.tier - sb.tier;
+      var ta = sa.deadline ? sa.deadline.t : (nextEventTime(a) || Infinity);
+      var tb = sb.deadline ? sb.deadline.t : (nextEventTime(b) || Infinity);
+      return ta - tb;
+    };
+  }
+
   /* ========================= 截止倒计时 =========================
    * 把「最近要截止的事」单独拎出来，按今天的日期算还剩多久。
    * 窗口：≤3 天算紧急，3—7 天算近期。已经过期的截止时间不进来。
@@ -608,6 +623,23 @@
 
   /* ========================= 过滤 ========================= */
 
+  /* 把命中的搜索词标出来，让人一眼看到"为什么这条会被搜到"。
+   * 先转义再匹配：文本和关键词走同一套转义，所以中文、& < > 都不会错位。 */
+  function hl(text, q) {
+    var s = esc(text == null ? '' : text);
+    var needle = String(q || '').trim();
+    if (!needle) return s;
+    var pat = esc(needle).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    try {
+      return s.replace(new RegExp(pat, 'gi'), function (m) {
+        return '<mark class="hl">' + m + '</mark>';
+      });
+    } catch (e) { return s; }
+  }
+
+  /* 当前搜索词，卡片渲染时用 */
+  function curQ() { return state.q.trim(); }
+
   /* 一条信息里所有可被搜到的文本。
    * 之前漏了 content（用户发布的正文）和发布者，还写了一个根本不存在的
    * it.publisher 字段，导致自己发的正文搜不到。这里统一收口，加字段只改这一处。 */
@@ -767,8 +799,8 @@
           (item.userPost && regCount(item.id)
             ? '<span class="chip chip--reg">📝 ' + regCount(item.id) + ' 人报名</span>' : '') +
         '</div>' +
-        '<h3 class="card__title">' + esc(item.title) + '</h3>' +
-        '<p class="card__one">' + esc(item.oneLiner || '') + '</p>' +
+        '<h3 class="card__title">' + hl(item.title, curQ()) + '</h3>' +
+        '<p class="card__one">' + hl(item.oneLiner || '', curQ()) + '</p>' +
         (item.userPost ? '<div class="pubLine">' + publisherLine(item) + '</div>' : '') +
         '<div class="card__facts">' + factLine(item) + '</div>' +
         '<div class="card__bottom">' +
@@ -878,12 +910,7 @@
         esc(soonest.title) + '」· ' + esc(relative(soonest.deadlines[0].at)) + '</button>');
     }
 
-    var mergedCount = RAW_ITEMS.filter(function (r) { return r.mergedInto; }).length;
-    var lowQuality = all.filter(function (it) {
-      return completeness(it).score <= 2 || (it.risk && it.risk.level === 'high');
-    }).length;
     var bk = deadlineBuckets(list, now);
-    var mineCount = list.filter(function (it) { return it.userPost; }).length;
 
     var html = '';
 
@@ -899,13 +926,12 @@
       '</div>';
     }
 
+    /* 只留两个数：一共有多少条、其中多少条快截止。
+       条数用 allItems() 实时算，所以账号发布之后这里会跟着涨。 */
     html += '<div class="summary">' +
       '<div class="summary__item"><b>' + all.length + '</b><span>条信息</span></div>' +
       '<div class="summary__item' + (bk.urgent.length ? ' is-alert' : '') + '"><b>' + bk.urgent.length +
         '</b><span>' + WINDOWS.urgentDays + ' 天内截止</span></div>' +
-      '<div class="summary__item"><b>' + mergedCount + '</b><span>条已合并</span></div>' +
-      '<div class="summary__item"><b>' + (mineCount || lowQuality) + '</b><span>' +
-        (mineCount ? '条账号发布' : '条信息不全/存疑') + '</span></div>' +
     '</div>';
 
     html += countdownPanel(list, now);
@@ -1103,37 +1129,83 @@
       '</div>';
     }
 
-    var mine = allItems().filter(function (it) {
-      return favs.indexOf(it.id) >= 0 || joins.indexOf(it.id) >= 0 || it.userPost;
-    });
+    /* ---- 三个分类：收藏 / 参与 / 发布 ----
+     * 同一条内容可以同时出现在多个分类里（比如自己发的又收藏了，
+     * 或者收藏了并且报了名），所以是三个独立的过滤，不是互斥分组。 */
+    var all = allItems();
 
-    /* 日程：只保留还没发生的，按时间排 */
-    var schedule = mine.filter(function (it) {
-      var st = statusOf(it, now);
-      return ['live', 'today', 'open', 'closing', 'upcoming', 'standby'].indexOf(st.key) >= 0;
-    }).sort(function (a, b) {
-      var ta = statusOf(a, now).deadline ? statusOf(a, now).deadline.t : (nextEventTime(a) || Infinity);
-      var tb = statusOf(b, now).deadline ? statusOf(b, now).deadline.t : (nextEventTime(b) || Infinity);
-      return ta - tb;
-    });
+    var favList = all.filter(function (it) { return favs.indexOf(it.id) >= 0; })
+      .sort(byUrgency(now));
 
-    html += '<section class="group"><h2 class="group__title">📋 我的日程<em>收藏或标记了「我要参加」的，按时间排</em></h2>';
-    if (!schedule.length) {
-      html += '<div class="empty empty--sm">还没有收藏任何活动。在列表里点 ☆ 或 🎯 就会出现在这里。</div>';
+    var joinList = all.filter(function (it) {
+      return joins.indexOf(it.id) >= 0 || !!mySignup(it.id);
+    }).sort(byUrgency(now));
+
+    var postList = all.filter(function (it) { return it.userPost; })
+      .sort(function (a, b) {
+        return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+      });
+
+    var regTotal = joinList.reduce(function (n, it) { return n + regCount(it.id); }, 0);
+
+    /* 左侧项目栏 */
+    var side = [
+      { id: 'sec-fav', icon: '🔖', name: '我的收藏', n: favList.length },
+      { id: 'sec-join', icon: '🎯', name: '我参与的', n: joinList.length },
+      { id: 'sec-pub', icon: '📝', name: '我发布的', n: postList.length }
+    ];
+
+    html += '<div class="mineLayout">';
+
+    html += '<aside class="mineSide" aria-label="我的分类">' +
+      side.map(function (s) {
+        return '<button type="button" class="mineSide__item" data-jump="' + s.id + '">' +
+          '<span class="mineSide__name">' + s.icon + ' ' + s.name + '</span>' +
+          '<b>' + s.n + '</b></button>';
+      }).join('') +
+      (regTotal ? '<p class="mineSide__note">收到 ' + regTotal + ' 条报名</p>' : '') +
+    '</aside>';
+
+    html += '<div class="mineMain">';
+
+    /* 1. 我的收藏 */
+    html += '<section class="group jumpSec" id="sec-fav">' +
+      '<h2 class="group__title">🔖 我的收藏<em>在列表里点 ☆ 加进来，共 ' + favList.length + ' 条</em></h2>';
+    if (!favList.length) {
+      html += '<div class="empty empty--sm">还没有收藏。在搜索页的卡片上点 ☆ 就会出现在这里。</div>';
     } else {
-      html += '<div class="cards">' + schedule.map(function (it) {
+      html += '<div class="cards">' + favList.map(function (it) {
         return cardHTML(it, statusOf(it, now));
       }).join('') + '</div>';
     }
     html += '</section>';
 
-    /* 我发布的 */
-    var posts = allItems().filter(function (it) { return it.userPost; });
-    html += '<section class="group"><h2 class="group__title">🙋 我发布的<em>发布后会进入正常浏览流程，其他人也能看到</em></h2>';
-    if (!posts.length) {
+    /* 2. 我参与的 */
+    html += '<section class="group jumpSec" id="sec-join">' +
+      '<h2 class="group__title">🎯 我参与的<em>标记了「我要参加」，或者已经报过名的，共 ' +
+        joinList.length + ' 条</em></h2>';
+    if (!joinList.length) {
+      html += '<div class="empty empty--sm">还没有参与任何活动。在卡片上点 🎯，' +
+        '或者在账号发布的内容里报名，就会出现在这里。</div>';
+    } else {
+      html += '<div class="cards">' + joinList.map(function (it) {
+        var mineReg = mySignup(it.id);
+        return '<div class="cardWrap">' + cardHTML(it, statusOf(it, now)) +
+          (mineReg ? '<div class="myReg">✅ 我已报名：' + esc(mineReg.name) + ' · ' +
+            esc(mineReg.phone) + '</div>' : '') +
+        '</div>';
+      }).join('') + '</div>';
+    }
+    html += '</section>';
+
+    /* 3. 我发布的 */
+    html += '<section class="group jumpSec" id="sec-pub">' +
+      '<h2 class="group__title">📝 我发布的<em>发布后会进入正常浏览流程，其他同学也能看到，共 ' +
+        postList.length + ' 条</em></h2>';
+    if (!postList.length) {
       html += '<div class="empty empty--sm">还没有发布过内容。同学可以发约球、找搭子、组队这类信息。</div>';
     } else {
-      html += '<div class="cards">' + posts.map(function (it) {
+      html += '<div class="cards">' + postList.map(function (it) {
         return '<div class="cardWrap">' + cardHTML(it, statusOf(it, now)) +
           regPanel(it) +
           '<div class="cardWrap__tools">' +
@@ -1143,6 +1215,8 @@
       }).join('') + '</div>';
     }
     html += '</section>';
+
+    html += '</div></div>';   /* mineMain / mineLayout */
 
     /* 设置 */
     html += '<section class="group"><h2 class="group__title">⚙️ 设置</h2>' +
@@ -1567,7 +1641,29 @@
     if (mustMiss.length) {
       box.className = 'precheck precheck--must';
       box.innerHTML = '<p>必填项还差：<b>' + mustMiss.join('、') + '</b>。' +
-        '这三项（门类、内容、截止时间）不填完不能发布。</p>';
+        '这四项（门类、标题、内容、截止时间）不填完不能发布。</p>';
+      return;
+    }
+
+    /* 内容审核：命中风险词直接拦下，必须改完才能发 */
+    var mod = checkFields({ '标题': g('title'), '发布内容': g('content'), '联系方式': g('contact') });
+    if (!mod.ok) {
+      var groups = {};
+      mod.hits.forEach(function (h) { (groups[h.cat] = groups[h.cat] || []).push(h); });
+      box.className = 'precheck precheck--block';
+      box.innerHTML =
+        '<p class="precheck__hd">🚫 <b>检测到 ' + mod.hits.length + ' 处风险表述，暂时不能发布</b></p>' +
+        '<p class="precheck__sub">改掉下面标出的词之后就能发。</p>' +
+        Object.keys(groups).map(function (k) {
+          var g0 = groups[k][0];
+          return '<div class="precheck__cat">' +
+            '<div class="precheck__catName">' + g0.icon + ' ' + esc(g0.catName) + '</div>' +
+            '<div class="precheck__words">' + groups[k].map(function (h) {
+              return '<span class="badword">' + esc(h.field) + '：「' + esc(h.word) + '」</span>';
+            }).join('') + '</div>' +
+            '<div class="precheck__why">' + esc(g0.desc) + '</div>' +
+          '</div>';
+        }).join('');
       return;
     }
 
@@ -1833,8 +1929,22 @@
     var t = e.target.closest('[data-tab],[data-open],[data-fav],[data-join],[data-filt],[data-toggle],' +
       '[data-reset],[data-clear-q],[data-goto-today],[data-publish],[data-edit],[data-del],' +
       '[data-close-sheet],[data-base],[data-wipe],[data-ics],[data-copy],[data-fb],' +
-      '[data-auth],[data-authmode],[data-delreg],[data-unsignup],[data-copyregs]');
+      '[data-auth],[data-authmode],[data-delreg],[data-unsignup],[data-copyregs],[data-jump]');
     if (!t) return;
+
+    /* ---- 左侧项目栏：跳到对应分类 ---- */
+    if (t.hasAttribute('data-jump')) {
+      var target = document.getElementById(t.getAttribute('data-jump'));
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        /* 高亮当前分类，让用户知道跳到了哪 */
+        Array.prototype.forEach.call(
+          document.querySelectorAll('.mineSide__item'),
+          function (b) { b.classList.remove('is-on'); });
+        t.classList.add('is-on');
+      }
+      return;
+    }
 
     /* ---- 报名名单：发布者移除某条报名 ---- */
     if (t.hasAttribute('data-delreg')) {
@@ -2178,6 +2288,18 @@
     var lackConfirm = f.elements.confirmIdentity && !f.elements.confirmIdentity.checked;
     if (lackConfirm) { toast('请先勾选「我确认以上内容由本人发布」'); return; }
 
+    /* 内容审核：命中风险词一律不放行，提示改哪里 */
+    var mod = checkFields({
+      '标题': title, '发布内容': content, '联系方式': g('contact')
+    });
+    if (!mod.ok) {
+      updatePrecheck();
+      var box0 = document.getElementById('precheck');
+      if (box0 && box0.scrollIntoView) box0.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      toast('有 ' + mod.hits.length + ' 处风险表述，改掉之后才能发布');
+      return;
+    }
+
     var startAt = g('startAt');
     var place = g('place');
     var need = (f.querySelector('input[name=needSignup]:checked') || {}).value;
@@ -2248,10 +2370,17 @@
 
     closeSheet();
     state.tab = 'search';
+    /* 清掉搜索词和筛选：否则刚发的内容可能被当前的筛选条件挡住，
+       用户会以为没发成功。同时整页重绘，概览里的条数跟着一起涨。 */
+    state.q = '';
+    state.category = 'all';
+    state.source = 'all';
     render();
-    toast(missing.length
-      ? '已发布（门类 ' + cat + '）。有 ' + missing.length + ' 项补充信息没填，页面上会提示同学注意'
-      : '发布成功，已经出现在列表里了');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    var total = allItems().length;
+    toast('发布成功，现在共有 ' + total + ' 条信息' +
+      (missing.length ? '（有 ' + missing.length + ' 项补充信息没填）' : ''));
   });
 
   /* ========================= 启动 ========================= */
@@ -2266,6 +2395,7 @@
     signupsOf: signupsOf, addSignup: addSignup, mySignup: mySignup, validPhone: validPhone,
     signupSection: signupSection, regPanel: regPanel, renderSearch: renderSearch,
     renderResults: renderResults, visibleItems: visibleItems, renderResultsOnly: renderResultsOnly,
+    favs: favs, joins: joins, hl: hl, byUrgency: byUrgency,
     RAW_ITEMS: RAW_ITEMS
   };
 
