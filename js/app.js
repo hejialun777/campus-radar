@@ -613,13 +613,92 @@
     editId: null,
     authOpen: false,
     authMode: 'login',
+    joinOpen: null,      /* 正在填参与信息的活动 id */
+    riskOpen: null,      /* 正在展示风险提醒的活动 id */
+    riskThen: null,      /* 风险提醒点「继续」之后要执行的动作 */
+    pendingSignup: null, /* 风险提醒期间暂存的报名表单内容 */
     settingsOpen: false,
     toast: null
   };
 
   var favs = readLS(LS.fav, []);
-  var joins = readLS(LS.join, []);
   var feedback = readLS(LS.fb, {});
+
+  /* ---- 「我要参加」的登记记录 ----
+   * 结构：{ [活动id]: { name, phone, at } }
+   * 点「我要参加」必须留下姓名和联系电话，之后组织者才找得到人。
+   * 旧版本存的是 ["01","03"] 这种纯 id 数组，这里自动迁移一次。 */
+  function joinsMap() {
+    var raw = readLS(LS.join, null);
+    if (Array.isArray(raw)) {
+      var migrated = {};
+      raw.forEach(function (id) {
+        migrated[id] = { name: '', phone: '', at: null, legacy: true };
+      });
+      writeLS(LS.join, migrated);
+      return migrated;
+    }
+    return raw && typeof raw === 'object' ? raw : {};
+  }
+
+  function joinInfo(id) { return joinsMap()[id] || null; }
+  function isJoined(id) { return !!joinsMap()[id]; }
+
+  function setJoin(id, info) {
+    var m = joinsMap();
+    m[id] = info;
+    writeLS(LS.join, m);
+  }
+
+  function removeJoin(id) {
+    var m = joinsMap();
+    delete m[id];
+    writeLS(LS.join, m);
+  }
+
+  function joinIds() { return Object.keys(joinsMap()); }
+
+  /* ---- 风险识别 ----
+   * 两个来源：数据里预先标注的 risk，以及内容命中审核规则。
+   * 后者是兜底——万一有内容绕过了发布时的检查（比如规则后来更新了）。 */
+  function riskOf(item) {
+    var out = [];
+    if (item.risk && item.risk.reason) {
+      out.push({
+        level: item.risk.level || 'low',
+        reason: item.risk.reason,
+        advice: item.risk.advice || []
+      });
+    }
+
+    /* 审核规则作为兜底：只有这条数据本身没有风险标注时才用它。
+       否则同一条内容会被两个来源各说一遍，读起来像骂了两遍。 */
+    if (out.length) return out;
+
+    var mod = checkFields({
+      '标题': item.title,
+      '内容': item.content || item.oneLiner || ''
+    });
+    if (!mod.ok) {
+      var cats = {};
+      mod.hits.forEach(function (h) { cats[h.catName] = true; });
+      out.push({
+        level: 'high',
+        reason: '这条内容包含风险表述：' + Object.keys(cats).join('、') + '。',
+        advice: ['不要按内容里的指引私下联系或转账', '遇到可疑情况可以向平台反馈']
+      });
+    }
+    return out;
+  }
+
+  function isRisky(item) { return riskOf(item).length > 0; }
+
+  /* 取最严重的一条，用来决定提醒的措辞 */
+  function topRisk(item) {
+    var r = riskOf(item);
+    if (!r.length) return null;
+    return r.filter(function (x) { return x.level === 'high'; })[0] || r[0];
+  }
 
   /* ========================= 过滤 ========================= */
 
@@ -780,7 +859,7 @@
   function cardHTML(item, st) {
     var fit = newbieFit(item);
     var isFav = favs.indexOf(item.id) >= 0;
-    var isJoin = joins.indexOf(item.id) >= 0;
+    var isJoin = isJoined(item.id);
     var updates = (item.updates || []).length;
     var risk = item.risk && item.risk.level === 'high';
 
@@ -807,7 +886,7 @@
           '<span class="fit fit--' + fit.key + '">' + fit.icon + ' ' + esc(fit.label) + '</span>' +
           '<div class="card__acts">' +
             '<button class="iconbtn' + (isJoin ? ' is-on' : '') + '" data-join="' + esc(item.id) + '" ' +
-              'title="标记我要参加" aria-label="标记我要参加">' + (isJoin ? '✅' : '🎯') + '</button>' +
+              'title="我要参加（需填姓名和联系电话）" aria-label="我要参加">' + (isJoin ? '✅' : '🎯') + '</button>' +
             '<button class="iconbtn' + (isFav ? ' is-on' : '') + '" data-fav="' + esc(item.id) + '" ' +
               'title="收藏" aria-label="收藏">' + (isFav ? '⭐' : '☆') + '</button>' +
           '</div>' +
@@ -1138,7 +1217,7 @@
       .sort(byUrgency(now));
 
     var joinList = all.filter(function (it) {
-      return joins.indexOf(it.id) >= 0 || !!mySignup(it.id);
+      return isJoined(it.id) || !!mySignup(it.id);
     }).sort(byUrgency(now));
 
     var postList = all.filter(function (it) { return it.userPost; })
@@ -1190,10 +1269,22 @@
     } else {
       html += '<div class="cards">' + joinList.map(function (it) {
         var mineReg = mySignup(it.id);
-        return '<div class="cardWrap">' + cardHTML(it, statusOf(it, now)) +
-          (mineReg ? '<div class="myReg">✅ 我已报名：' + esc(mineReg.name) + ' · ' +
-            esc(mineReg.phone) + '</div>' : '') +
-        '</div>';
+        var mineJoin = joinInfo(it.id);
+        var line = '';
+        if (mineJoin && !mineJoin.legacy) {
+          line += '<div class="myReg">🎯 我已登记参加：<b>' + esc(mineJoin.name) + '</b> · ' +
+            esc(mineJoin.phone) +
+            (mineJoin.org ? ' · ' + esc(mineJoin.org) : '') +
+            '<button type="button" class="mini" data-join="' + esc(it.id) + '">修改</button></div>';
+        } else if (mineJoin && mineJoin.legacy) {
+          line += '<div class="myReg myReg--legacy">🎯 已标记参加，但还没填姓名和电话' +
+            '<button type="button" class="mini" data-join="' + esc(it.id) + '">去补填</button></div>';
+        }
+        if (mineReg) {
+          line += '<div class="myReg myReg--reg">📝 我已报名：<b>' + esc(mineReg.name) + '</b> · ' +
+            esc(mineReg.phone) + '</div>';
+        }
+        return '<div class="cardWrap">' + cardHTML(it, statusOf(it, now)) + line + '</div>';
       }).join('') + '</div>';
     }
     html += '</section>';
@@ -1250,7 +1341,7 @@
     var fit = newbieFit(item);
     var comp = completeness(item);
     var isFav = favs.indexOf(item.id) >= 0;
-    var isJoin = joins.indexOf(item.id) >= 0;
+    var isJoin = isJoined(item.id);
     var cat = CATS[item.category] || { label: '未分类', code: '?', desc: '' };
 
     var h = '';
@@ -1266,7 +1357,7 @@
 
     h += '<div class="sheet__acts">' +
       '<button class="btn ' + (isJoin ? 'btn--primary' : 'btn--ghost') + '" data-join="' + esc(item.id) + '">' +
-        (isJoin ? '✅ 已标记参加' : '🎯 我要参加') + '</button>' +
+        (isJoin ? '✅ 已登记参加' : '🎯 我要参加') + '</button>' +
       '<button class="btn ' + (isFav ? 'btn--primary' : 'btn--ghost') + '" data-fav="' + esc(item.id) + '">' +
         (isFav ? '⭐ 已收藏' : '☆ 收藏') + '</button>' +
       '<button class="btn btn--ghost" data-ics="' + esc(item.id) + '"' +
@@ -1767,6 +1858,138 @@
     openSheet(renderAuth(state.authMode), 'sheet--form');
   }
 
+  /* ========================= 我要参加 · 登记姓名电话 =========================
+   * 点「我要参加」必须留下姓名和联系电话：组织者或群主才找得到人，
+   * 也避免出现"点了一堆参加、真到现场谁也没来"的空报名。
+   * ====================================================================== */
+
+  function openJoin(id) {
+    var item = getItem(id);
+    if (!item) return;
+    state.joinOpen = id;
+    state.openId = null; state.publishOpen = false; state.editId = null;
+    state.authOpen = false; state.riskOpen = null;
+    openSheet(renderJoin(item), 'sheet--form');
+  }
+
+  function renderJoin(item) {
+    var me = currentUser();
+    var cur = joinInfo(item.id);
+    var isEdit = !!cur;
+    var r = topRisk(item);
+    var h = '';
+
+    h += '<div class="sheet__head">' +
+      '<h2 class="sheet__title">' + (isEdit ? '修改参与信息' : '登记参加') + '</h2>' +
+      '<p class="sheet__one">参加「' + esc(item.title) + '」' +
+        (isEdit ? '，可以改一下你的信息。' : '需要留下姓名和联系电话。') +
+        '这样组织者或群主才能联系到你。</p>' +
+    '</div>';
+
+    /* 风险项目在填信息之前再提醒一次 */
+    if (r) {
+      h += '<div class="riskMini riskMini--' + r.level + '">' +
+        (r.level === 'high' ? '⚠️ ' : 'ℹ️ ') + esc(r.reason) +
+        (r.level === 'high' ? '<br><b>建议先核实清楚再登记。</b>' : '') +
+      '</div>';
+    }
+
+    h += '<form class="form" id="joinForm" data-item="' + esc(item.id) + '">';
+
+    h += '<label class="fld"><span>参与姓名 <b>*</b></span>' +
+      '<input name="jname" required maxlength="20" placeholder="填真实姓名，方便现场核对" ' +
+        'value="' + esc(cur ? cur.name : (me ? me.name : '')) + '"></label>';
+
+    h += '<label class="fld"><span>联系电话 <b>*</b></span>' +
+      '<input name="jphone" required inputmode="numeric" maxlength="11" ' +
+        'placeholder="11 位手机号" value="' + esc(cur ? cur.phone : '') + '">' +
+      '<em class="fld__hint">只在你参加的活动里使用，用来联系你本人。</em></label>';
+
+    h += '<label class="fld"><span>学院 / 班级（选填）</span>' +
+      '<input name="jorg" maxlength="30" placeholder="例：计算机学院 2026 级" ' +
+        'value="' + esc(me && me.org ? me.org : '') + '"></label>';
+
+    h += '<label class="fld"><span>备注（选填）</span>' +
+      '<input name="jnote" maxlength="40" placeholder="例：会晚到 10 分钟"></label>';
+
+    h += '<div class="signupNote" id="joinNote"></div>';
+
+    h += '<div class="form__acts">' +
+      '<button type="button" class="btn btn--ghost" data-close-sheet="1">取消</button>' +
+      '<button type="submit" class="btn btn--primary">' + (isEdit ? '保存修改' : '确认参加') + '</button>' +
+    '</div>';
+
+    if (isEdit) {
+      h += '<button type="button" class="btn btn--ghost btn--wide" data-unjoin="' + esc(item.id) + '">' +
+        '取消参加</button>';
+    }
+
+    h += '</form>';
+    return h;
+  }
+
+  /* ========================= 风险提醒弹层 =========================
+   * 在风险项目上点「报名」「收藏」「我要参加」时先弹出来，
+   * 把风险讲清楚，用户确认后才继续。
+   * ============================================================ */
+
+  function openRisk(id, then) {
+    var item = getItem(id);
+    if (!item) return;
+    state.riskOpen = id;
+    state.riskThen = then;          /* 'join' | 'fav' | 'signup' */
+    state.openId = null; state.publishOpen = false; state.editId = null;
+    state.authOpen = false; state.joinOpen = null;
+    openSheet(renderRisk(item, then), 'sheet--form');
+  }
+
+  var ACTION_NAME = { join: '我要参加', fav: '收藏', signup: '报名' };
+
+  function renderRisk(item, then) {
+    var risks = riskOf(item);
+    var high = risks.some(function (r) { return r.level === 'high'; });
+    var comp = completeness(item);
+    var h = '';
+
+    h += '<div class="sheet__head">' +
+      '<div class="riskBadge riskBadge--' + (high ? 'high' : 'low') + '">' +
+        (high ? '⚠️ 高风险信息' : 'ℹ️ 请注意') + '</div>' +
+      '<h2 class="sheet__title">这条信息存在风险，确认要继续吗？</h2>' +
+      '<p class="sheet__one">你正在对「' + esc(item.title) + '」执行' +
+        '<b>「' + esc(ACTION_NAME[then] || '该操作') + '」</b>。</p>' +
+    '</div>';
+
+    h += '<section class="sec sec--risk sec--risk-' + (high ? 'high' : 'low') + '">' +
+      '<h3>系统识别到的问题</h3>' +
+      risks.map(function (r) {
+        return '<p>' + esc(r.reason) + '</p>' +
+          (r.advice && r.advice.length
+            ? '<ul>' + r.advice.map(function (a) { return '<li>' + esc(a) + '</li>'; }).join('') + '</ul>'
+            : '');
+      }).join('') +
+    '</section>';
+
+    h += '<section class="sec"><h3>这条信息的基本情况</h3><div class="kv">' +
+      kvRow('发布者身份', SOURCES[item.source]
+        ? SOURCES[item.source].icon + ' ' + esc(SOURCES[item.source].label) : '未注明') +
+      kvRow('发布方', esc(item.sourceName || '未注明')) +
+      kvRow('信息完整度', comp.score + ' / ' + comp.total + ' 项关键信息已提供') +
+    '</div></section>';
+
+    h += '<div class="riskActions">' +
+      '<button type="button" class="btn btn--ghost" data-close-sheet="1">' +
+        (high ? '算了，不操作了' : '先不了') + '</button>' +
+      '<button type="button" class="btn btn--primary" data-riskgo="1">' +
+        (high ? '我已了解风险，仍要继续' : '知道了，继续') + '</button>' +
+    '</div>';
+
+    h += '<p class="sec__desc sec__desc--tip" style="margin-top:12px">' +
+      '风险提示只代表这条信息有疑点，不代表已经确认有问题。' +
+      '但如果对方要求转账、索要身份证银行卡、或让你添加私人微信，请直接停止操作。</p>';
+
+    return h;
+  }
+
   /* ========================= 日历导出 ========================= */
 
   function toICS(item) {
@@ -1899,10 +2122,19 @@
     root.innerHTML = '';
     document.body.style.overflow = '';
     state.openId = null; state.publishOpen = false; state.editId = null; state.authOpen = false;
+    state.joinOpen = null; state.riskOpen = null; state.riskThen = null; state.pendingSignup = null;
   }
 
   function refreshSheet() {
-    if (state.authOpen) {
+    if (state.riskOpen) {
+      var ri = getItem(state.riskOpen);
+      if (ri) openSheet(renderRisk(ri, state.riskThen), 'sheet--form');
+      else closeSheet();
+    } else if (state.joinOpen) {
+      var ji = getItem(state.joinOpen);
+      if (ji) openSheet(renderJoin(ji), 'sheet--form');
+      else closeSheet();
+    } else if (state.authOpen) {
       openSheet(renderAuth(state.authMode), 'sheet--form');
     } else if (state.publishOpen || state.editId) {
       var it = state.editId ? getItem(state.editId) : null;
@@ -1925,12 +2157,55 @@
     return arr;
   }
 
+  /* 收藏的统一入口：风险项目要先过提醒 */
+  function doFav(id) {
+    toggleIn(favs, id);
+    writeLS(LS.fav, favs);
+    toast(favs.indexOf(id) >= 0 ? '已收藏，可在「我的」里查看' : '已取消收藏');
+    render(); refreshSheet();
+  }
+
   document.addEventListener('click', function (e) {
     var t = e.target.closest('[data-tab],[data-open],[data-fav],[data-join],[data-filt],[data-toggle],' +
       '[data-reset],[data-clear-q],[data-goto-today],[data-publish],[data-edit],[data-del],' +
       '[data-close-sheet],[data-base],[data-wipe],[data-ics],[data-copy],[data-fb],' +
-      '[data-auth],[data-authmode],[data-delreg],[data-unsignup],[data-copyregs],[data-jump]');
+      '[data-auth],[data-authmode],[data-delreg],[data-unsignup],[data-copyregs],[data-jump],' +
+      '[data-riskgo],[data-unjoin]');
     if (!t) return;
+
+    /* ---- 风险提醒：「继续」之后才真正执行 ---- */
+    if (t.hasAttribute('data-riskgo')) {
+      var rid = state.riskOpen;
+      var then = state.riskThen;
+      state.riskOpen = null; state.riskThen = null;
+      if (!rid) { closeSheet(); return; }
+      if (then === 'fav') { doFav(rid); }
+      else if (then === 'join') { openJoin(rid); }
+      else if (then === 'signup') {
+        var pending = state.pendingSignup;
+        state.pendingSignup = null;
+        if (pending && pending.itemId === rid) {
+          /* 表单填好的信息先存着，确认完直接落库，不用重填 */
+          completeSignup(rid, pending.payload);
+        } else {
+          var si = getItem(rid);
+          if (si) { state.openId = rid; openSheet(renderDetail(si)); }
+          else closeSheet();
+        }
+      } else { closeSheet(); }
+      return;
+    }
+
+    /* ---- 取消参加 ---- */
+    if (t.hasAttribute('data-unjoin')) {
+      var ujid = t.getAttribute('data-unjoin');
+      if (!confirm('取消参加？你的姓名和电话会从这条记录里删掉。')) return;
+      removeJoin(ujid);
+      toast('已取消参加');
+      closeSheet();
+      render();
+      return;
+    }
 
     /* ---- 左侧项目栏：跳到对应分类 ---- */
     if (t.hasAttribute('data-jump')) {
@@ -2009,16 +2284,22 @@
     if (t.hasAttribute('data-fav')) {
       e.stopPropagation();
       var id = t.getAttribute('data-fav');
-      toggleIn(favs, id); writeLS(LS.fav, favs);
-      toast(favs.indexOf(id) >= 0 ? '已收藏，可在「我的」里查看' : '已取消收藏');
-      render(); refreshSheet(); return;
+      var favItem = getItem(id);
+      /* 取消收藏不用提醒；新增收藏风险项目要先弹风险提醒 */
+      if (favItem && favs.indexOf(id) < 0 && isRisky(favItem)) { openRisk(id, 'fav'); return; }
+      doFav(id);
+      return;
     }
     if (t.hasAttribute('data-join')) {
       e.stopPropagation();
       var jid = t.getAttribute('data-join');
-      toggleIn(joins, jid); writeLS(LS.join, joins);
-      toast(joins.indexOf(jid) >= 0 ? '已标记参加，可在「我的」里查看' : '已取消标记');
-      render(); refreshSheet(); return;
+      var jItem = getItem(jid);
+      if (!jItem) return;
+      /* 已参加过的点进来就是修改/取消，不用再提醒一遍 */
+      if (isJoined(jid)) { openJoin(jid); return; }
+      if (isRisky(jItem)) { openRisk(jid, 'join'); return; }
+      openJoin(jid);
+      return;
     }
     if (t.hasAttribute('data-ics')) { e.stopPropagation(); downloadICS(getItem(t.getAttribute('data-ics'))); return; }
     if (t.hasAttribute('data-copy')) { e.stopPropagation(); copyItem(getItem(t.getAttribute('data-copy'))); return; }
@@ -2113,7 +2394,7 @@
         [LS.fav, LS.join, LS.posts, LS.fb].forEach(function (k) {
           try { localStorage.removeItem(k); } catch (err) {}
         });
-        favs = []; joins = []; feedback = {};
+        favs = []; feedback = {};
         toast('已清空');
         render();
       }
@@ -2225,6 +2506,38 @@
     }).catch(function () { say('注册失败，请重试'); });
   });
 
+  /* 「我要参加」登记表单提交 */
+  document.addEventListener('submit', function (e) {
+    if (!e.target || e.target.id !== 'joinForm') return;
+    e.preventDefault();
+
+    var f = e.target;
+    var itemId = f.getAttribute('data-item');
+    var g = function (n) { var el = f.elements[n]; return el ? String(el.value || '').trim() : ''; };
+    var note = document.getElementById('joinNote');
+    var say = function (msg) {
+      if (note) { note.className = 'signupNote signupNote--err'; note.textContent = msg; }
+    };
+
+    var name = g('jname');
+    var phone = g('jphone');
+    if (!name) { say('请填写参与姓名'); return; }
+    if (!validPhone(phone)) { say('手机号格式不对，请填 11 位手机号（1 开头）'); return; }
+
+    setJoin(itemId, {
+      name: name,
+      phone: phone,
+      org: g('jorg'),
+      note: g('jnote'),
+      at: new Date().toISOString()
+    });
+
+    closeSheet();
+    state.tab = 'mine';
+    render();
+    toast('已登记参加，姓名和电话已记录');
+  });
+
   /* 报名表单提交 */
   document.addEventListener('submit', function (e) {
     if (!e.target || e.target.id !== 'signupForm') return;
@@ -2247,19 +2560,33 @@
     if (!validPhone(phone)) { say('手机号格式不对，请填 11 位手机号（1 开头）'); return; }
     if (mySignup(itemId)) { say('你已经报过名了'); return; }
 
+    var payload = { name: name, phone: phone, org: g('sorg'), account: me.name };
+
+    /* 风险项目：先弹提醒，用户确认后再落库。填好的信息先存着，别让人重填。 */
+    if (isRisky(item)) {
+      state.pendingSignup = { itemId: itemId, payload: payload };
+      openRisk(itemId, 'signup');
+      return;
+    }
+
+    completeSignup(itemId, payload);
+  });
+
+  /* 真正写入报名记录 */
+  function completeSignup(itemId, payload) {
+    if (mySignup(itemId)) return;
     addSignup(itemId, {
       id: 'R' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      name: name,
-      phone: phone,
-      org: g('sorg'),
-      account: me.name,
+      name: payload.name,
+      phone: payload.phone,
+      org: payload.org || '',
+      account: payload.account,
       at: new Date().toISOString()
     });
-
     toast('报名成功，发布者能看到你的姓名和手机号');
-    render();
-    refreshSheet();
-  });
+    state.openId = itemId;
+    render(); refreshSheet();
+  }
 
   /* 发布表单提交 */
   document.addEventListener('submit', function (e) {
@@ -2395,7 +2722,9 @@
     signupsOf: signupsOf, addSignup: addSignup, mySignup: mySignup, validPhone: validPhone,
     signupSection: signupSection, regPanel: regPanel, renderSearch: renderSearch,
     renderResults: renderResults, visibleItems: visibleItems, renderResultsOnly: renderResultsOnly,
-    favs: favs, joins: joins, hl: hl, byUrgency: byUrgency,
+    favs: favs, hl: hl, byUrgency: byUrgency, isJoined: isJoined, joinInfo: joinInfo,
+    setJoin: setJoin, removeJoin: removeJoin, joinIds: joinIds,
+    riskOf: riskOf, isRisky: isRisky, topRisk: topRisk, renderJoin: renderJoin, renderRisk: renderRisk,
     RAW_ITEMS: RAW_ITEMS
   };
 

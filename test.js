@@ -622,6 +622,98 @@ Promise.resolve()
       getEl('view').innerHTML.includes('还没有收藏'));
   })
   .then(() => {
+    /* ============ 17. 我要参加：必须填姓名和电话 ============ */
+    section('17. 「我要参加」登记姓名与电话');
+
+    const i01x = R.allItems().filter(i => i.id === '01')[0];
+    const joinHTML = R.renderJoin(i01x);
+
+    check('登记弹层要求填「参与姓名」', joinHTML.includes('参与姓名') && joinHTML.includes('name="jname"'));
+    check('登记弹层要求填「联系电话」', joinHTML.includes('联系电话') && joinHTML.includes('name="jphone"'));
+    check('姓名和电话都是必填', /name="jname"[^>]*required/.test(joinHTML) &&
+      /name="jphone"[^>]*required/.test(joinHTML));
+    check('电话输入框限制为 11 位数字', joinHTML.includes('maxlength="11"') &&
+      joinHTML.includes('inputmode="numeric"'));
+
+    /* 登记记录必须真的把姓名电话存下来 */
+    R.setJoin('01', { name: '张三', phone: '13800138000', org: '计算机学院', at: new Date().toISOString() });
+    const ji = R.joinInfo('01');
+    check('登记后能取回姓名', ji && ji.name === '张三');
+    check('登记后能取回电话', ji && ji.phone === '13800138000');
+    check('isJoined 判定为已参加', R.isJoined('01') === true);
+
+    /* 「我参与的」里要显示出来 */
+    R.state.tab = 'mine';
+    R.render();
+    const mineJoin = getEl('view').innerHTML;
+    check('「我参与的」里显示我登记的姓名和电话',
+      mineJoin.includes('我已登记参加') && mineJoin.includes('张三') && mineJoin.includes('13800138000'));
+    check('可以点「修改」重填', mineJoin.includes('data-join="01"'));
+
+    /* 旧格式（纯 id 数组）要能自动迁移 */
+    store['cr_joins'] = JSON.stringify(['07', '12']);
+    check('旧格式自动迁移：能读出两个 id',
+      R.joinIds().length === 2 && R.joinIds().indexOf('07') >= 0);
+    check('迁移后的记录标记为 legacy（还没填姓名电话）',
+      R.joinInfo('07') && R.joinInfo('07').legacy === true);
+    R.render();
+    check('没填姓名电话的旧记录会提示「去补填」',
+      getEl('view').innerHTML.includes('去补填'));
+
+    /* 清理，避免影响后面的断言 */
+    store['cr_joins'] = JSON.stringify({});
+  })
+  .then(() => {
+    /* ============ 18. 风险项目：报名 / 收藏前先弹提醒 ============ */
+    section('18. 风险项目操作前的提醒');
+
+    const i24 = R.allItems().filter(i => i.id === '24')[0];   /* 高风险：兼职福利分享 */
+    const i25 = R.allItems().filter(i => i.id === '25')[0];   /* 高风险：疑似推广 */
+    const i22 = R.allItems().filter(i => i.id === '22')[0];   /* 低风险：场地待确认 */
+    const i01y = R.allItems().filter(i => i.id === '01')[0];  /* 无风险 */
+
+    check('24 号被识别为风险项目', R.isRisky(i24) === true);
+    check('25 号被识别为风险项目', R.isRisky(i25) === true);
+    check('22 号（场地待确认）也被识别为风险', R.isRisky(i22) === true);
+    check('01 号正常活动不算风险', R.isRisky(i01y) === false);
+    check('风险等级取最高的一条',
+      R.topRisk(i24).level === 'high' && R.topRisk(i22).level === 'low');
+
+    /* 三种操作都会走同一个提醒弹层 */
+    const ACT = { fav: '收藏', join: '我要参加', signup: '报名' };
+    ['fav', 'join', 'signup'].forEach(act => {
+      const r = R.renderRisk(i24, act);
+      check('点「' + ACT[act] + '」会弹出风险提醒',
+        r.includes('这条信息存在风险，确认要继续吗'));
+      check('  提醒里写明了这次要做什么操作', r.includes(ACT[act]));
+    });
+
+    const riskHTML = R.renderRisk(i24, 'fav');
+    check('提醒里给出具体风险原因', riskHTML.includes('未提供主办方'));
+    check('提醒里给出该怎么防范', riskHTML.includes('不要提供身份证、银行卡'));
+    check('提醒里标出发布方未注明',
+      riskHTML.includes('发布方') && riskHTML.includes('未注明'));
+    check('提醒里显示信息完整度', riskHTML.includes('关键信息已提供'));
+    check('高风险项目要继续必须明确确认',
+      riskHTML.includes('我已了解风险，仍要继续') && riskHTML.includes('算了，不操作了'));
+    check('提醒里说明风险提示不等于已确认有问题',
+      riskHTML.includes('不代表已经确认有问题'));
+
+    /* 低风险项目的措辞要轻一些 */
+    const lowRisk = R.renderRisk(i22, 'fav');
+    check('低风险项目用「请注意」而不是「高风险」',
+      lowRisk.includes('请注意') && !lowRisk.includes('高风险信息'));
+    check('低风险项目的继续按钮措辞更轻', lowRisk.includes('知道了，继续'));
+
+    /* 登记弹层里对风险项目也要再提示一次 */
+    const riskyJoin = R.renderJoin(i24);
+    check('风险项目的登记弹层里也带风险提示',
+      riskyJoin.includes('riskMini') && riskyJoin.includes('未提供主办方'));
+
+    const safeJoin = R.renderJoin(i01y);
+    check('正常活动的登记弹层不出现风险提示', !safeJoin.includes('riskMini'));
+  })
+  .then(() => {
     /* ===================== 汇总 ===================== */
     console.log('\n' + '─'.repeat(52));
     console.log(fail === 0
