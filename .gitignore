@@ -1,16 +1,35 @@
-# 依赖与构建产物（本项目为纯静态页面，正常不会有这些）
+# 依赖与构建产物（本项目是纯静态页面，不依赖任何 npm 包，正常不会有这些）
 node_modules/
 dist/
 build/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# 环境变量与密钥（本项目没有服务端，用不到；预留给以后，防止误提交）
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+secrets.json
 
 # 编辑器 / 系统
 .vscode/
 .idea/
+*.sublime-project
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# 日志与临时文件
+# 缓存 / 日志 / 临时文件
+.cache/
+.parcel-cache/
 *.log
 npm-debug.log*
+yarn-error.log*
 *.tmp
+*.bak
+*.swp
+*~
