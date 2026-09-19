@@ -54,13 +54,12 @@
     if (isNaN(d)) return '';
     var now = currentTime();
     var dd = dayDiff(d, now);
-    var head;
-    if (dd === 0) head = '今天';
-    else if (dd === 1) head = '明天';
-    else if (dd === 2) head = '后天';
-    else if (dd === -1) head = '昨天';
-    else head = (d.getMonth() + 1) + '月' + d.getDate() + '日';
-    var tail = '(' + WD[d.getDay()] + ')';
+    var head, tail = '';
+    if (dd === 0) head = '今天';                       /* 今天不用再报星期几 */
+    else if (dd === 1) { head = '明天'; tail = '(' + WD[d.getDay()] + ')'; }
+    else if (dd === 2) { head = '后天'; tail = '(' + WD[d.getDay()] + ')'; }
+    else if (dd === -1) { head = '昨天'; tail = '(' + WD[d.getDay()] + ')'; }
+    else { head = (d.getMonth() + 1) + '月' + d.getDate() + '日'; tail = '(' + WD[d.getDay()] + ')'; }
     var t = opts.dateOnly ? '' : ' ' + fmtTime(d);
     return head + tail + t;
   }
@@ -336,6 +335,7 @@
       out.push('<span class="fact fact--tbd"><i>📍</i>地点待确认</span>');
     }
 
+    /* 报名相关：有截止时间就报时间；没有的话，至少要让用户知道要不要报名 */
     var dl = (item.deadlines || [])[0];
     if (dl) {
       var dtxt = dl.at
@@ -344,6 +344,10 @@
       out.push('<span class="fact"><i>✍️</i>' + esc(dl.label || '截止') + ' ' + esc(dtxt) + '</span>');
     } else if (item.needSignup === false) {
       out.push('<span class="fact"><i>✍️</i>无需报名</span>');
+    } else if (item.needSignup === true) {
+      out.push('<span class="fact fact--tbd"><i>✍️</i>需报名 · 截止时间未注明</span>');
+    } else {
+      out.push('<span class="fact fact--tbd"><i>✍️</i>是否需报名未注明</span>');
     }
     if (item.commitment) {
       out.push('<span class="fact"><i>⏳</i>' + esc(item.commitment) + '</span>');

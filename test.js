@@ -199,6 +199,9 @@ const radarHTML = tryRender('全部信息页', () => { R.state.tab = 'radar'; R.
 check('列表里出现了已合并的角标', radarHTML.includes('已合并'));
 check('列表里出现了新生适配标签', radarHTML.includes('fit--ok'));
 check('高风险条目有视觉标记', radarHTML.includes('card--risky'));
+check('没有报名信息的条目不静默留空，而是标注「是否需报名未注明」',
+  radarHTML.includes('是否需报名未注明'));
+check('今天的活动不再重复显示星期几', radarHTML.includes('今天 19:00') && !radarHTML.includes('今天(周六)'));
 
 const todayHTML = tryRender('今日安排页', () => { R.state.tab = 'today'; R.render(); return getEl('view').innerHTML; });
 check('今日页出现「今天开始」的活动', todayHTML.includes('今天'));
