@@ -52,11 +52,14 @@ const document = {
 
 const sandbox = {
   console, setTimeout, clearTimeout, setInterval: () => 0, clearInterval,
-  document, localStorage,
+  document, localStorage, Promise,
   navigator: {},
   location: { href: '' },
   URL: { createObjectURL: () => 'blob:x', revokeObjectURL() {} },
   Blob: function () {},
+  /* 不提供 crypto.subtle，让 hashPassword 走弱散列回退分支，
+     正好覆盖「file:// 等不安全上下文下也能用」这条路径 */
+  crypto: {},
   Math, Date, JSON, String, Number, Array, Object, Proxy, isNaN, parseInt, parseFloat, Infinity
 };
 sandbox.window = sandbox;
@@ -257,10 +260,114 @@ check('.ics 里带地点与提醒', ics.includes('实验楼A402') && ics.include
 check('没有确定时间的条目不生成 .ics（19 号地点待确认但有时间 → 应有）',
   !!R.toICS(R.allItems().filter(x => x.id === '22')[0]));
 
-/* ===================== 汇总 ===================== */
-console.log('\n' + '─'.repeat(52));
-console.log(fail === 0
-  ? '\x1b[32m全部通过\x1b[0m：' + pass + ' 项'
-  : '\x1b[31m' + fail + ' 项失败\x1b[0m，' + pass + ' 项通过');
-console.log('─'.repeat(52) + '\n');
-process.exit(fail === 0 ? 0 : 1);
+/* ===================== 7. 门类 A—F ===================== */
+section('7. 门类归属（对照《校园活动分类整理》）');
+
+/* 与分类文件逐条核对，26 项每项唯一门类 */
+const CAT_MAP = {
+  '01': 'A', '02': 'C', '03': 'B', '04': 'C', '05': 'D', '06': 'B', '07': 'A',
+  '08': 'B', '09': 'A', '10': 'C', '11': 'C', '12': 'A', '13': 'B', '14': 'C',
+  '15': 'A', '16': 'B', '17': 'E', '18': 'C', '19': 'D', '20': 'B', '21': 'C',
+  '22': 'F', '23': 'F', '24': 'F', '25': 'F', '26': 'C'
+};
+let catBad = [];
+R.RAW_ITEMS.forEach(it => {
+  if (it.category !== CAT_MAP[it.id]) catBad.push(it.id + '(期望' + CAT_MAP[it.id] + '实际' + it.category + ')');
+});
+check('26 项全部门类与分类文件一致', catBad.length === 0, catBad.join(' '));
+
+const vis = R.allItems();
+const cnt = {};
+vis.forEach(i => { cnt[i.category] = (cnt[i.category] || 0) + 1; });
+check('六个门类都有内容，且总数为 24（26 减去 2 条已合并）',
+  Object.keys(cnt).length === 6 && vis.length === 24, JSON.stringify(cnt));
+check('A 竞赛与训练营 = 4 条（09 已并入 01）', cnt.A === 4, '实际 ' + cnt.A);
+check('F 学生个人发起 = 4 条', cnt.F === 4, '实际 ' + cnt.F);
+check('E 学习资源 = 1 条', cnt.E === 1, '实际 ' + cnt.E);
+
+check('门类徽章能正常渲染', R.catChip('A').includes('竞赛与训练营') && R.catChip('F').includes('学生个人发起'));
+check('未知门类不炸', R.catChip('ZZZ') === '');
+
+/* ===================== 8. 发布者身份 ===================== */
+section('8. 发布者身份');
+
+const srcMap = { '21': 'college', '26': 'college', '22': 'student', '23': 'student', '24': 'student', '25': 'student' };
+let srcBad = [];
+R.RAW_ITEMS.forEach(it => {
+  const want = srcMap[it.id] || 'unknown';
+  if (it.source !== want) srcBad.push(it.id);
+});
+check('只有明确写了发布方的 6 条被认领，其余如实标为「未注明」', srcBad.length === 0, srcBad.join(' '));
+
+const unknownCount = vis.filter(i => i.source === 'unknown').length;
+check('未注明发布方的有 18 条（不替材料编造身份）', unknownCount === 18, '实际 ' + unknownCount);
+check('学院发布 2 条', vis.filter(i => i.source === 'college').length === 2);
+
+/* ===================== 9. 距截止还剩 N 天 ===================== */
+section('9. 距截止还剩 3 天 / 3–7 天');
+
+const bk = R.deadlineBuckets(vis, NOW);
+const urgentIds = bk.urgent.map(e => e.item.id);
+const soonIds = Array.from(new Set(bk.soon.map(e => e.item.id)));
+
+check('3 天内截止的正好是 05、07、13',
+  urgentIds.length === 3 && urgentIds.join(',') === '05,07,13', urgentIds.join(','));
+check('3—7 天内的是 03、17、15、01',
+  soonIds.length === 4 && soonIds.join(',') === '03,17,15,01', soonIds.join(','));
+check('已经过期的截止时间不进倒计时（19 号报名 9/18 已过）', !urgentIds.includes('19') && !soonIds.includes('19'));
+check('没有具体时间的截止不进倒计时（06 号「满员即止」）',
+  !urgentIds.includes('06') && !soonIds.includes('06'));
+
+check('倒计时文案：22 小时', R.countdownText(22 * 3600000) === '22 小时', R.countdownText(22 * 3600000));
+check('倒计时文案：不足 1 小时按分钟', R.countdownText(40 * 60000) === '40 分钟', R.countdownText(40 * 60000));
+check('倒计时文案：5.3 天显示为 5 天', R.countdownText(5.3 * 86400000) === '5 天', R.countdownText(5.3 * 86400000));
+
+/* 时间推到 9/22，紧急的那批应该已经过期，倒计时列表要跟着换 */
+const bk22 = R.deadlineBuckets(vis, new Date('2026-09-22T10:00:00'));
+check('时间推进到 9/22 后，倒计时列表随之更新（05/07/13 已过期）',
+  !bk22.urgent.map(e => e.item.id).includes('05') && bk22.urgent.map(e => e.item.id).includes('15'),
+  bk22.urgent.map(e => e.item.id).join(','));
+
+/* ===================== 10. 账号与发布者身份确认 ===================== */
+section('10. 账号与发布者身份确认');
+
+check('未登录时 currentUser 为 null', R.currentUser() === null);
+check('注册表单会要求选发布者身份', R.renderAuth('register').includes('发布者身份'));
+check('注册表单带上了 18 个学院', R.renderAuth('register').includes('计算机学院') &&
+  R.renderAuth('register').includes('美术设计与建筑学院'));
+
+Promise.resolve()
+  .then(() => R.registerUser('张三', '1234', { role: 'student', org: '计算机学院', sid: '2026xxxx' }))
+  .then(() => {
+    const me = R.currentUser();
+    check('注册后自动登录', !!me && me.name === '张三');
+    check('会话里带上了发布者身份', me.role === 'student' && me.org === '计算机学院');
+    return R.loginUser('张三', '错误的密码');
+  })
+  .then(r => {
+    check('密码错误时拒绝登录', r.ok === false);
+    return R.loginUser('张三', '1234');
+  })
+  .then(r => {
+    check('密码正确时登录成功', r.ok === true);
+    const line = R.publisherLine({
+      userPost: true, verified: true, author: { name: '张三', org: '计算机学院' }
+    });
+    check('已确认身份的发布者会显示名字和单位',
+      line.includes('已确认身份') && line.includes('张三') && line.includes('计算机学院'));
+    const line2 = R.publisherLine({ userPost: true, verified: false, author: { name: '李四' } });
+    check('未确认身份的发布者会被标出', line2.includes('未确认'));
+  })
+  .then(() => {
+    /* ===================== 汇总 ===================== */
+    console.log('\n' + '─'.repeat(52));
+    console.log(fail === 0
+      ? '\x1b[32m全部通过\x1b[0m：' + pass + ' 项'
+      : '\x1b[31m' + fail + ' 项失败\x1b[0m，' + pass + ' 项通过');
+    console.log('─'.repeat(52) + '\n');
+    process.exit(fail === 0 ? 0 : 1);
+  })
+  .catch(err => {
+    console.log('\n\x1b[31m测试过程抛异常：\x1b[0m ' + err.message + '\n' + err.stack);
+    process.exit(1);
+  });
