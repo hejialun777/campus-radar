@@ -1,0 +1,16 @@
+# 依赖与构建产物（本项目为纯静态页面，正常不会有这些）
+node_modules/
+dist/
+build/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 日志与临时文件
+*.log
+npm-debug.log*
+*.tmp
