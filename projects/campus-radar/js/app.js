@@ -1154,12 +1154,6 @@
       state.tab === 'radar' ? '把散落各处的校园信息，整理成你现在就能决定的事'
       : state.tab === 'today' ? '今天和接下来几天，按时间排好'
       : '收藏、参加和发布的内容';
-
-    /* 搜索框焦点保持 */
-    if (state.tab === 'radar' && state.q) {
-      var qi = document.getElementById('q');
-      if (qi && document.activeElement !== qi) { /* 不抢焦点 */ }
-    }
   }
 
   /* ========================= 弹层 ========================= */
